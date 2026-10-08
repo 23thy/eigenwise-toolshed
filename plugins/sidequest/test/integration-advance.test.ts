@@ -15,6 +15,7 @@ const store = require('../lib/store.js');
 const mcp = require('../lib/mcp.js');
 const commitScope = require('../lib/commit-scope.js');
 const worktrees = require('../lib/worktrees.js');
+const agentsync = require('../lib/agentsync.js');
 const { makeCliRunner } = require('./_helpers.js');
 
 const BIN = path.join(__dirname, '..', 'bin', 'sidequest.js');
@@ -1449,17 +1450,21 @@ test('GH-247: the gate verifier does not inherit the board process plugin-host v
 
 // SQ-3425: the environment lane. A dispatch pins environment:'shared' onto the requirement; the fixture's
 // direct claim never gets a pin, so the row is written the way the legacy preflight test writes its row.
+function persistTicket(slug: string, ticket: any) {
+  const dbModule = require('../lib/db.js');
+  dbModule.putRow(dbModule.openDb(SIDEQUEST_HOME), 'tickets', {
+    id: ticket.id, project: slug, ref: ticket.ref, status: ticket.status,
+    archived: 0, ord: ticket.order, claim_by: ticket.claim?.by ?? null, data: ticket,
+  });
+}
+
 function pinSharedEnvironment(slug: string, ref: string, command: string) {
   const ticket = store.getTicket(slug, ref);
   const requirement = { kind: 'command', command, evidenceContract: command, environment: 'shared' };
   const lifecycleAttempt = { ...(ticket.dispatch?.lifecycleAttempt || ticket.lifecycleAttempt || {}), execution: 'dispatched', verificationRequirement: requirement };
   ticket.lifecycleAttempt = lifecycleAttempt;
   ticket.dispatch = { ...(ticket.dispatch || {}), verificationRequirement: requirement, lifecycleAttempt, terminalAt: new Date().toISOString() };
-  const dbModule = require('../lib/db.js');
-  dbModule.putRow(dbModule.openDb(SIDEQUEST_HOME), 'tickets', {
-    id: ticket.id, project: slug, ref: ticket.ref, status: ticket.status,
-    archived: 0, ord: ticket.order, claim_by: ticket.claim?.by ?? null, data: ticket,
-  });
+  persistTicket(slug, ticket);
 }
 
 function forwardSlashes(target: string) {
@@ -1511,11 +1516,11 @@ test('SQ-3425: CLI integrate on the environment lane ends the verifier tree at t
   assert.equal(result.status, 1, result.stderr + result.stdout);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.delivery, null, result.stdout);
-  assert.equal(payload.verifyFailed.status, 'timeout', JSON.stringify(payload));
-  assert.equal(payload.verifyFailed.timeoutMilliseconds, 2000);
-  assert.equal(payload.verifyFailed.exitCode, 124, 'the recorded timeout carries the owned tree\'s exit code');
+  assert.equal(payload.verify.status, 'timeout', JSON.stringify(payload));
+  assert.equal(payload.verify.timeoutMilliseconds, 2000);
+  assert.equal(payload.verify.exitCode, 124, 'the recorded timeout carries the owned tree\'s exit code');
   assert.equal(head(fixture.repo), before, 'the timed-out delivery was rolled back');
-  assert.equal(store.getTicket(slug, ticket.ref).submission.integration.reason, 'verification_timeout_post_merge');
+  assert.equal(store.getTicket(slug, ticket.ref).rejectedSubmissions[0].integration.reason, 'verification_timeout_post_merge');
   assert.equal(fs.readFileSync(path.join(evidenceDirectory, 'owned-phase.env'), 'utf8'), '1', 'the lane ran under the owned tree');
   const grandchild = Number(fs.readFileSync(path.join(evidenceDirectory, 'grandchild.pid'), 'utf8'));
   assert.ok(grandchild > 0);
@@ -1524,7 +1529,7 @@ test('SQ-3425: CLI integrate on the environment lane ends the verifier tree at t
   assert.equal(holder.ticket, ticket.ref);
   assert.equal(holder.pinnedCommit, fixture.submitted);
   assert.equal(holder.command, verify);
-  assert.equal(holder.logPath, payload.verifyFailed.logPath);
+  assert.equal(holder.logPath, payload.verify.logPath);
   assert.ok(Number.isInteger(holder.pid) && holder.pid > 0);
   assert.ok(typeof holder.token === 'string' && holder.token.length > 0);
   assert.ok(!Number.isNaN(Date.parse(holder.startedAt)));
@@ -1745,11 +1750,11 @@ test('SQ-3480: a passing environment-lane verifier whose job owner leaves no mem
   assert.equal(result.status, 1, result.stderr + result.stdout);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.delivery, null, result.stdout);
-  assert.equal(payload.verifyFailed.status, 'could_not_run', JSON.stringify(payload));
-  assert.match(payload.verifyFailed.evidence, /^The verification command ended, but its process tree did not\. Survivor state unknown: the job owner left no account of its job members\./);
-  assert.match(fs.readFileSync(payload.verifyFailed.logPath, 'utf8'), /^__SIDEQUEST_VERIFY_EXIT__=0$/m, 'the verifier itself passed');
+  assert.equal(payload.verify.status, 'could_not_run', JSON.stringify(payload));
+  assert.match(payload.verify.evidence, /^The verification command ended, but its process tree did not\. Survivor state unknown: the job owner left no account of its job members\./);
+  assert.match(fs.readFileSync(payload.verify.logPath, 'utf8'), /^__SIDEQUEST_VERIFY_EXIT__=0$/m, 'the verifier itself passed');
   assert.equal(head(fixture.repo), before, 'the unaccounted delivery was rolled back');
-  assert.equal(store.getTicket(slug, ticket.ref).submission.integration.reason, 'verification_could_not_run_post_merge');
+  assert.equal(store.getTicket(slug, ticket.ref).rejectedSubmissions[0].integration.reason, 'verification_could_not_run_post_merge');
 });
 
 // The done line alone is SQ-3487's reproduction: the owner's old log parse recorded it passed with exit 0.
@@ -1766,14 +1771,14 @@ for (const [forgery, forgedLines] of [['every owner marker', FORGED_OWNER_MARKER
     assert.equal(result.status, 1, result.stderr + result.stdout);
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.delivery, null, result.stdout);
-    assert.equal(payload.verifyFailed.status, 'could_not_run', JSON.stringify(payload));
-    assert.match(payload.verifyFailed.evidence, /^The verification owner ended without reporting\./);
-    const log = fs.readFileSync(payload.verifyFailed.logPath, 'utf8');
+    assert.equal(payload.verify.status, 'could_not_run', JSON.stringify(payload));
+    assert.match(payload.verify.evidence, /^The verification owner ended without reporting\./);
+    const log = fs.readFileSync(payload.verify.logPath, 'utf8');
     assert.match(log, /^__SIDEQUEST_VERIFY_EXIT__=0$/m, 'the verifier itself passed');
     assert.match(log, /^__SIDEQUEST_VERIFY_DONE__\r?$/m, 'the verifier forged the done line');
     assert.match(log, /test-injected owner crash/, 'the owner crashed on the injected fault');
     assert.equal(head(fixture.repo), before, 'the unreported delivery was rolled back');
-    assert.equal(store.getTicket(slug, ticket.ref).submission.integration.reason, 'verification_could_not_run_post_merge');
+    assert.equal(store.getTicket(slug, ticket.ref).rejectedSubmissions[0].integration.reason, 'verification_could_not_run_post_merge');
   });
 }
 
@@ -1787,9 +1792,147 @@ test('SQ-3484: an environment-lane verifier exiting 7 with a cleanup error recor
   assert.equal(result.status, 1, result.stderr + result.stdout);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.delivery, null, result.stdout);
-  assert.equal(payload.verifyFailed.status, 'failed_suite', JSON.stringify(payload));
-  assert.equal(payload.verifyFailed.exitCode, 7);
-  assert.match(payload.verifyFailed.evidence, /^The required command exited 7\. Its process tree did not end either: Survivor state unknown: the job owner left no account of its job members\./);
+  assert.equal(payload.verify.status, 'failed_suite', JSON.stringify(payload));
+  assert.equal(payload.verify.exitCode, 7);
+  assert.match(payload.verify.evidence, /^The required command exited 7\. Its process tree did not end either: Survivor state unknown: the job owner left no account of its job members\./);
   assert.equal(head(fixture.repo), before, 'the failed delivery was rolled back');
-  assert.equal(store.getTicket(slug, ticket.ref).submission.integration.reason, 'verification_failed_suite_post_merge');
+  assert.equal(store.getTicket(slug, ticket.ref).rejectedSubmissions[0].integration.reason, 'verification_failed_suite_post_merge');
+});
+
+// SQ-3426: a failed lane run goes back to the ticket once, through the ordinary rework record.
+function laneFailure(slug: string, ticket: any, fixture: any) {
+  return store.integrateSubmission(slug, ticket.ref, { mode: 'merge', target: fixture.target });
+}
+
+test('SQ-3426: the first failed environment-lane run sends the ticket back to todo with the log, and the second parks it naming both logs', { timeout: 120_000 }, () => {
+  const { fixture, slug, ticket, runCli } = deliveryTicket('environment-lane-bounce');
+  pinSharedEnvironment(slug, ticket.ref, nodeVerify("console.log('lane output');process.exit(7)"));
+  const before = head(fixture.repo);
+
+  const first = runCli(['integrate', ticket.ref, '--by', 'orchestrator', '--json']);
+
+  assert.equal(first.status, 1, first.stderr + first.stdout);
+  const payload = JSON.parse(first.stdout);
+  assert.equal(payload.delivery, null);
+  assert.equal(payload.reason, 'environment_lane_reworked');
+  assert.equal(payload.verify.status, 'failed_suite');
+  assert.equal(head(fixture.repo), before, 'the failed delivery was rolled back');
+  assert.ok(payload.message.includes(`${ticket.ref} returned to todo for rework with this evidence in its briefing; dispatch it again. The candidate is preserved at refs/sidequest/${ticket.ref}-rejected.`), payload.message);
+  const bounced = store.getTicket(slug, ticket.ref);
+  assert.equal(bounced.status, 'todo');
+  assert.equal(bounced.submission, null);
+  const [rejected] = bounced.rejectedSubmissions;
+  assert.equal(rejected.rejectionKind, 'rework');
+  assert.equal(rejected.source, 'environment-lane');
+  assert.equal(rejected.rejectedBy, 'fixture-worker');
+  assert.equal(rejected.commit, fixture.submitted);
+  assert.equal(rejected.integration.pinnedCommit, fixture.submitted);
+  assert.equal(rejected.integration.deliveryHead, payload.deliveryHead, 'the record carries the merged head that was rolled back');
+  assert.notEqual(rejected.integration.deliveryHead, before);
+  assert.equal(rejected.integration.verify.logPath, payload.verify.logPath);
+  assert.equal(rejected.integration.reason, 'verification_failed_suite_post_merge');
+  assert.equal(rejected.quarantineRef, `refs/sidequest/${ticket.ref}-rejected`);
+  assert.equal(head(fixture.repo, rejected.quarantineRef), fixture.submitted, 'the candidate is preserved');
+  const evidence = bounced.comments.find((comment: any) => /^Integration verification returned failed_suite\./.test(comment.body));
+  assert.ok(evidence, JSON.stringify(bounced.comments));
+  assert.ok(evidence.body.includes(`Log: ${payload.verify.logPath}`));
+  assert.match(evidence.body, /Output tail:\n[\s\S]*lane output/);
+  assert.equal(rejected.review, evidence.body.slice(0, 1000));
+  const briefing = agentsync.renderTicketBriefing(bounced, 'lane-token', slug, fixture.repo);
+  assert.match(briefing, /## Pending rework/);
+  assert.ok(briefing.includes(`Rejected candidate: ${fixture.submitted} (preserved at refs/sidequest/${ticket.ref}-rejected)`));
+  assert.ok(briefing.includes(`Log: ${payload.verify.logPath}`));
+
+  // The repair dispatch: a fresh candidate off the current target, claimed and submitted the way the fixture does.
+  const reopened = store.getTicket(slug, ticket.ref);
+  delete reopened.dispatch;
+  delete reopened.lifecycleAttempt;
+  persistTicket(slug, reopened);
+  git(['reset', '--hard', 'main'], fixture.executor);
+  const repaired = commitFile(fixture.executor, 'feature.txt', 'repaired executor work\n');
+  submitFixture(slug, ticket, { ...fixture, submitted: repaired });
+  pinSharedEnvironment(slug, ticket.ref, nodeVerify('process.exit(7)'));
+
+  const second = runCli(['integrate', ticket.ref, '--by', 'orchestrator', '--json']);
+
+  assert.equal(second.status, 1, second.stderr + second.stdout);
+  const parked = JSON.parse(second.stdout);
+  assert.equal(parked.reason, 'environment_lane_second_failure');
+  assert.equal(parked.message, `${ticket.ref} failed its environment lane run twice, so it stays parked for a decision instead of a second automatic rework. First failure, candidate ${fixture.submitted}: ${payload.verify.logPath}. Second failure, candidate ${repaired}: ${parked.verify.logPath}.`);
+  assert.notEqual(parked.verify.logPath, payload.verify.logPath);
+  assert.equal(head(fixture.repo), before, 'the second failed delivery was rolled back too');
+  const stored = store.getTicket(slug, ticket.ref);
+  assert.equal(stored.status, 'doing');
+  assert.equal(stored.submission.commit, repaired, 'the submission stays parked');
+  assert.equal(stored.submission.integration.reason, 'environment_lane_second_failure');
+  assert.equal(stored.submission.integration.message, parked.message);
+  assert.equal(stored.rejectedSubmissions.length, 1, 'no second rework record');
+});
+
+test('SQ-3426: a conflicting --no-ff merge of a deferred candidate bounces the ticket the same way', () => {
+  const { fixture, slug, ticket } = deliveryTicket('environment-lane-conflict');
+  pinSharedEnvironment(slug, ticket.ref, nodeVerify('process.exit(0)'));
+  const before = commitFile(fixture.repo, 'feature.txt', 'conflicting main work\n');
+
+  const result = laneFailure(slug, ticket, fixture);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'environment_lane_reworked');
+  assert.deepEqual(result.conflictedPaths, ['feature.txt']);
+  assert.equal(head(fixture.repo), before);
+  const bounced = store.getTicket(slug, ticket.ref);
+  assert.equal(bounced.status, 'todo');
+  const [rejected] = bounced.rejectedSubmissions;
+  assert.equal(rejected.source, 'environment-lane');
+  assert.equal(rejected.commit, fixture.submitted);
+  assert.equal(rejected.integration.reason, 'merge_failed');
+  const conflict = `Merge --no-ff of ${fixture.submitted} onto main at ${before} conflicted in feature.txt.`;
+  assert.equal(rejected.review, conflict);
+  assert.equal(rejected.reason, `${conflict} Rebase the candidate onto the current main, resolve the conflict in the candidate, and resubmit.`);
+  assert.ok(bounced.comments.some((comment: any) => comment.body === conflict), JSON.stringify(bounced.comments));
+  assert.ok(result.message.startsWith(rejected.reason), result.message);
+  assert.doesNotMatch(result.message, /Resolve it by hand/, 'the orchestrator hand-resolution recipe is not what the executor is told');
+});
+
+test('SQ-3426: a reviewed candidate that fails its environment-lane run stays parked, never auto-reworked', () => {
+  const { fixture, slug, ticket } = deliveryTicket('environment-lane-reviewed');
+  pinSharedEnvironment(slug, ticket.ref, nodeVerify('process.exit(7)'));
+  const review = store.createTicket(slug, { title: 'lane review', category: 'review-audit', files: ['feature.txt'] }, { ref: ticket.ref, commit: fixture.submitted });
+  const submittedAt = new Date().toISOString();
+  const source = store.getTicket(slug, ticket.ref);
+  source.dispatch = { ...source.dispatch, outcome: 'submitted', agentId: 'source-a', attempts: [{ outcome: 'submitted', commit: fixture.submitted, agentId: 'source-a', terminalAt: submittedAt }] };
+  persistTicket(slug, source);
+  const done = store.getTicket(slug, review.ref);
+  done.status = 'done';
+  done.dispatch = { terminalAt: submittedAt, outcome: 'done', agentId: 'review-b', attempts: [{ outcome: 'done', agentId: 'review-b', terminalAt: submittedAt }] };
+  persistTicket(slug, done);
+  const before = head(fixture.repo);
+
+  const result = laneFailure(slug, ticket, fixture);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'verification_failed_suite_post_merge', result.message);
+  assert.equal(head(fixture.repo), before);
+  const parked = store.getTicket(slug, ticket.ref);
+  assert.equal(parked.status, 'doing');
+  assert.equal(parked.submission.commit, fixture.submitted);
+  assert.equal(parked.submission.integration.reason, 'verification_failed_suite_post_merge');
+  assert.equal(parked.rejectedSubmissions, undefined);
+  assert.equal(store.getTicket(slug, review.ref).reviewTarget.ref, ticket.ref, 'the binding is untouched');
+});
+
+test('SQ-3426: a default-board post-merge failure keeps its submission parked with the failure record', () => {
+  const { fixture, slug, ticket } = deliveryTicket('environment-lane-default-failure');
+  store.updateTicket(slug, ticket.ref, { executorVerifyKind: 'command', executorVerify: mainBranchVerifier('', 7) });
+  const before = head(fixture.repo);
+
+  const result = laneFailure(slug, ticket, fixture);
+
+  assert.equal(result.reason, 'verification_failed_suite_post_merge');
+  assert.equal(head(fixture.repo), before);
+  const parked = store.getTicket(slug, ticket.ref);
+  assert.equal(parked.status, 'doing');
+  assert.equal(parked.submission.commit, fixture.submitted);
+  assert.equal(parked.rejectedSubmissions, undefined);
+  assert.deepEqual(parked.comments, [], 'no evidence comment on a default board');
 });

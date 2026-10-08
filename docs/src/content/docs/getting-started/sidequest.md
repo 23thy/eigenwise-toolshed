@@ -66,6 +66,14 @@ an owner that dies first is recorded as `could_not_run`, whatever the verifier e
 The owner reports how the run ended on a private channel the verifier never sees, so the verifier's stdout and
 stderr are only the suite's log: nothing it prints, even a copy of an owner line, changes the verdict.
 
+A lane candidate never ran that verifier before it was submitted, so a failed lane run (or a `--no-ff` merge
+that conflicts) is the first anyone saw of the failure. After the rollback, integrate sends the ticket back to
+`todo` through the ordinary rework path once, with the command, log path, failures and output tail as the
+rework evidence, so the next dispatch's briefing carries the failure under "Pending rework". Nothing is
+spawned: you still decide to dispatch it. A second lane failure of the same ticket stays parked with
+`environment_lane_second_failure` naming both logs, and a candidate bound to a review is never reworked
+automatically. Default boards keep their existing failure handling.
+
 Integration always happens in your local checkout: Claude merges the work into the local target branch and
 runs the check there. Sidequest never fetches and never pushes, so the push stays a deliberate step you or
 Claude take afterwards. When the project has an `origin` remote, Sidequest additionally reads
