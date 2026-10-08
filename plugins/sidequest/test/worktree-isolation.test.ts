@@ -34,10 +34,10 @@ const GUARD_DESTRUCTIVE = path.join(HOOKS, 'guard-destructive-git.js');
 const FORCE_EXEC_BYPASS = path.join(HOOKS, 'force-exec-bypass.js');
 const SUBAGENT_STOP = path.join(HOOKS, 'subagent-stop.js');
 
-function initRepo(prefix: string) {
+function initRepo(prefix: string, parent: string = os.tmpdir()) {
   // native realpath expands 8.3 short names (CI's RUNNERA~1 temp dir) the way git's
   // show-toplevel does, so refusal text can be compared against the fixture path.
-  const repo = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  const repo = fs.realpathSync.native(fs.mkdtempSync(path.join(parent, prefix)));
   const git = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', windowsHide: true });
   git(['init', '-b', 'main']);
   git(['config', 'user.name', 'Sidequest Test']);
@@ -2474,7 +2474,11 @@ test('an unrelated executor subagent does not inherit a session fallback claim',
 });
 
 test('a destructive git command is refused while the shared checkout carries uncommitted work', () => {
-  const repo = initRepo('sq-destructive-repo-');
+  // test:full nests TMP under a sidequest-full-suite-* directory, and on windows-latest that made the
+  // fixture path 94 characters: printed twice, the refusal passed the 768-byte PreToolUse budget and lost
+  // its last line, the recovery command (SQ-3534). The same nesting here reproduces that length, under an
+  // `sq-` prefix so _temp-cleanup collects it.
+  const repo = initRepo('sq-destructive-repo-', fs.mkdtempSync(path.join(os.tmpdir(), 'sq-nested-full-suite-')));
   store.ensureProject(repo);
   const clean = runHook(GUARD_DESTRUCTIVE, {
     cwd: repo,
@@ -2494,6 +2498,7 @@ test('a destructive git command is refused while the shared checkout carries unc
   assert.ok(reason.includes('executor-work.txt'), 'lists what would be destroyed');
   assert.ok(reason.includes('git stash push'), 'names the recoverable alternative');
   assert.ok(reason.includes('sidequest recover-shared'), 'names the exact recovery action');
+  assert.ok(!reason.includes('content omitted'), `fits the PreToolUse budget untruncated at a ${repo.length}-character repo path`);
 
   const narrow = runHook(GUARD_DESTRUCTIVE, {
     cwd: repo,

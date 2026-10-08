@@ -410,7 +410,6 @@ function destructiveRefusal(label, repo, dirty) {
   if (dirty.length > shown.length) shown.push(`  … +${dirty.length - shown.length} more`);
   return [
     `sidequest: refusing ${label} — the shared checkout (a board-registered project root; your evidence clone is not one) has ${dirty.length} uncommitted change(s) that this operation would destroy.`,
-    `  repo: ${repo}`,
     ...shown,
     "Some of this may be a live executor's finished work that lost its worktree; the shared tree is not yours alone.",
     `Next step: preserve every dirty path in a named stash (for example, \`git stash push -u -m "sidequest recovery"\`), then run \`sidequest recover-shared --project "${repo}" --stash <stash@{n}> --yes\`. That exact recovery action verifies the stash before it runs \`git reset --hard && git clean -fd\`.`
