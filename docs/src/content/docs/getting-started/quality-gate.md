@@ -17,4 +17,16 @@ The gate enforces CRAP strictly below 6 for every new or physically modified own
 
 Use `coverageCommand` to capture fresh LCOV while source hashes stay fixed. It gets an empty `QUALITY_GATE_COVERAGE_DIR` (also exposed as `QUARTERMASTER_COVERAGE_DIR`) for its `lcov.info`. Existing LCOV needs a matching `<lcov>.sources.json` SHA-256 map saved at coverage capture. Source hashes alone do not prove executable-line completeness. JS/TS LCOV currently has no supported independent executable-line inventory, so those rows stay UNVERIFIED. Supported JS/TS bodies can use the existing `measure` entry with genuine same-session V8 capture. Raw V8 capture from vite-node does not identify source modules.
 
+## New JavaScript helpers outside a repository
+
+```text
+node plugins/quality-gate/bin/quality-gate.js measure --project <root> --coverage <V8-directory> --new-external-file <absolute path>
+```
+
+Repeat `--new-external-file` for each new external `.js`, `.cjs` or `.mjs` helper. External-only measurement needs no Git repository or base. Repository files still require `--base`, including mixed invocations. All declared external bodies are new and enforced, with canonical absolute identities, raw-byte SHA-256 hashes and resolved Node/TypeScript evaluator versions in their rows.
+
+Use normalized absolute realpaths outside the project root. Aliases, duplicate identities, traversal, unsupported extensions and invalid UTF-8 are refused with a reason and no passing row. BOM source is retained but refused because the current parser's offsets drift. Capture into an empty `QUALITY_GATE_V8_CAPTURE` directory with the canonical `lib/core.mjs` file URL preloaded through inherited `NODE_OPTIONS=--import=<file URL>`. Every child needs both values. Interrupted or unpreloaded children leave missing evidence, which stays UNVERIFIED.
+
+Ordinary CommonJS bodies use exact captured text and AST/runtime ranges. Static methods lacking an exact twin, patched wrappers and unsupported maps stay UNVERIFIED. Exact zero-hit bodies measure zero; absent bodies stay UNVERIFIED. Complexity 2 with zero coverage scores 6 and fails. `measure` prints JSON and exits 1 on score failure, unverified rows or a refused declaration.
+
 Exit 0 means passed, empty scope or informational-only rows; exit 1 means a score failure; exit 2 means an unverified enforced function or missing prerequisite. `--json` includes the verdict. Git runs write hash-bound receipts under `.claude/quality-gate/receipts/<head-sha>.json`, including unverified runs. Consumers must check root, HEAD, source hashes and `ccOnly` before accepting a full pass. This command doesn't install hooks or configure your project.

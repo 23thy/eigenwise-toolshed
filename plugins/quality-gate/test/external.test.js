@@ -16,7 +16,7 @@ const cliPath = path.join(pluginRoot, 'bin/quality-gate.js');
 const calledSource = 'module.exports = function subject(value) { return value + 1; };\nmodule.exports(1);\n';
 
 function runNode(argumentsList, environment = process.env) {
-  const { NODE_TEST_CONTEXT, NODE_V8_COVERAGE, NODE_OPTIONS, QUALITY_GATE_V8_CAPTURE, ...inherited } = environment;
+  const { NODE_TEST_CONTEXT, NODE_V8_COVERAGE, ...inherited } = environment;
   return spawnSync(process.execPath, argumentsList, { encoding: 'utf8', timeout: 30000, env: inherited });
 }
 
@@ -92,6 +92,10 @@ test('repeatable CLI external declarations need coverage but no base or reposito
   const missing = runNode([cliPath, 'measure', '--new-external-file', fixture.sourcePaths[0]]);
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /coverage/);
+  const noFiles = runNode([cliPath, 'measure', '--coverage', fixture.coverageDirectory]);
+  assert.equal(noFiles.status, 1);
+  assert.match(noFiles.stderr, /files/);
+  assert.match(runNode([cliPath, '--help']).stdout, /new-external-file.*absolute path/);
   const wrongCommand = runNode([cliPath, 'crap', '--new-external-file', fixture.sourcePaths[0]]);
   assert.equal(wrongCommand.status, 2);
   assert.match(wrongCommand.stderr, /new-external-file.*measure/);
@@ -130,6 +134,11 @@ test('child-only external execution requires the inherited canonical core preloa
   const uncaptured = await externalFixture(context);
   capture(uncaptured, ['-e', `const { spawnSync } = require('node:child_process'); const environment = { ...process.env }; delete environment.NODE_OPTIONS; const execution = spawnSync(process.execPath, [${JSON.stringify(uncaptured.sourcePaths[0])}], { env: environment, timeout: 10000 }); process.exitCode = execution.status;`]);
   assert.match((await externalReport(uncaptured)).unverified[0].unverified, /no suite loaded.*child process/);
+  const interrupted = await externalFixture(context, { 'subject.cjs': calledSource + 'setInterval(() => {}, 1000);\n' });
+  const execution = spawnSync(process.execPath, interrupted.sourcePaths, { timeout: 2000, env: { ...process.env, NODE_OPTIONS: '--import=' + coreUrl, QUALITY_GATE_V8_CAPTURE: interrupted.coverageDirectory } });
+  assert.equal(execution.error.code, 'ETIMEDOUT');
+  assert.deepEqual(await fs.readdir(interrupted.coverageDirectory), [], 'interrupted child must leave no completed capture');
+  assert.match((await externalReport(interrupted)).unverified[0].unverified, /no suite loaded/);
 });
 
 test('external one-byte source edits invalidate capture instead of acquiring a passing row', async (context) => {
@@ -157,6 +166,16 @@ test('external raw V8 and unmatched transformed source stay unverified', async (
   capture(changed);
   await fs.writeFile(changed.sourcePaths[0], calledSource + 'void 0;\n');
   assert.match((await externalReport(changed)).unverified[0].unverified, /matching source map/);
+  for (const sources of [['different.cjs'], ['subject.cjs', 'different.cjs']]) {
+    const map = { version: 3, sources, sourcesContent: [calledSource], names: [], mappings: '' };
+    const transformed = await externalFixture(context, { 'subject.cjs': calledSource + '//# sourceMappingURL=data:application/json;base64,' + Buffer.from(JSON.stringify(map)).toString('base64') + '\n' });
+    capture(transformed);
+    await fs.writeFile(transformed.sourcePaths[0], calledSource);
+    assert.match((await externalReport(transformed)).unverified[0].unverified, /matching source map/, 'unsupported maps must never acquire external-source proof');
+  }
+  const wrapped = await externalFixture(context);
+  capture(wrapped, ['-e', `const Module = require('node:module'); Module.wrapper[0] += 'void 0;'; require(${JSON.stringify(wrapped.sourcePaths[0])});`]);
+  assert.match((await externalReport(wrapped)).unverified[0].unverified, /executed bytes.*differ/, 'patched CJS wrapper must fail exact-byte admission');
 });
 
 test('external path and UTF8 refusals identify the declaration and return no passing report', async (context) => {
@@ -181,6 +200,10 @@ test('external path and UTF8 refusals identify the declaration and return no pas
     await assert.rejects(measureFiles([], { ...fixture, externalNewFiles: [declaration] }), reason, 'invalid explicit declaration must refuse: ' + declaration);
   }
   await assert.rejects(measureFiles([], { ...fixture, externalNewFiles: [valid, valid] }), /duplicate/);
+  if (process.platform === 'win32') {
+    await assert.rejects(measureFiles([], { ...fixture, externalNewFiles: [valid, valid.replace('subject.cjs', 'SUBJECT.cjs')] }), /alias|duplicate/);
+    await assert.rejects(measureFiles([valid.replace('subject.cjs', 'SUBJECT.cjs')], { ...fixture, externalNewFiles: [valid] }), /alias/);
+  }
   const directoryAlias = path.join(fixture.root, 'alias');
   await fs.symlink(fixture.projectRoot, directoryAlias, 'junction');
   await assert.rejects(measureFiles([], { ...fixture, externalNewFiles: [path.join(directoryAlias, 'inside.cjs')] }), /alias/);

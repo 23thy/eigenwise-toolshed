@@ -9,7 +9,14 @@ const HELP = `Usage:
   quality-gate crap [--project <root>] [--base <revision>] [--lcov <path>]
                     [--coverage-command "<command>"] [--cc-only] [--json]
                     [--complexity <lizard.csv>]
-  quality-gate measure --project <root> --base <revision> --coverage <V8-directory> <files...>
+  quality-gate measure [--project <root>] [--base <revision>] --coverage <V8-directory>
+                       [--new-external-file <absolute path>]... [files...]
+
+measure requires --base for repository files. Explicit new external .js/.cjs/.mjs files
+need no Git repository or base; every owned body is enforced. Declarations must be normalized,
+canonical regular files outside --project, with strict UTF-8 (BOM offsets unsupported).
+External rows include admission=external-new, absolute identity, raw SHA-256 and evaluator versions.
+Capture children through inherited NODE_OPTIONS with the canonical lib/core.mjs file URL.
 
 crap reads .claude/quality-gate/crap.json (falls back to .claude/quartermaster/crap.json).
 --project selects the tree measured, including a linked worktree; without it the cwd's Git root is used.
@@ -32,14 +39,19 @@ Receipts, including unverified runs, go to .claude/quality-gate/receipts/<head-s
 function argumentsForCommand() {
   const options = Object.fromEntries(['project', 'base', 'coverage', 'lcov', 'coverage-command', 'complexity', 'ratchet', 'max'].map((name) => [name, { type: 'string' }]));
   Object.assign(options, Object.fromEntries(['cc-only', 'json', 'help'].map((name) => [name, { type: 'boolean' }])));
-  return parseArgs({ allowPositionals: true, options });
+  options['new-external-file'] = { type: 'string', multiple: true };
+  const parsed = parseArgs({ allowPositionals: true, options });
+  if (parsed.values['new-external-file'] && parsed.positionals[0] !== 'measure') throw new Error('--new-external-file belongs to measure only');
+  return parsed;
 }
 
 async function runMeasure(values, files) {
-  if (![values.base, values.coverage, files.length].every(Boolean)) throw new Error('Usage: quality-gate measure --project <root> --base <revision> --coverage <V8-directory> <files...>. Supply the missing arguments, or run quality-gate --help.');
-  const report = await measureFiles(files, { projectRoot: path.resolve(values.project || process.cwd()), base: values.base, coverageDirectory: path.resolve(values.coverage) });
+  const externalNewFiles = values['new-external-file'] ?? [];
+  if (!values.coverage) throw new Error('measure requires --coverage <V8-directory>; run quality-gate --help for capture instructions');
+  if (files.length + externalNewFiles.length === 0) throw new Error('measure requires repository files or --new-external-file <absolute path>');
+  const report = await measureFiles(files, { projectRoot: path.resolve(values.project || process.cwd()), base: values.base, coverageDirectory: path.resolve(values.coverage), externalNewFiles });
   process.stdout.write(JSON.stringify(report) + '\n');
-  process.exitCode = Number(report.failures.length > 0 || report.unverified.length > 0);
+  process.exitCode = Number(report.failures.length + report.unverified.length > 0);
 }
 
 async function capturedReport(values) {
