@@ -15,6 +15,7 @@ node plugins/quality-gate/bin/quality-gate.js crap --project <root> --base <revi
   "sources": ["src"],
   "exclude": ["**/*.test.*"],
   "base": "main",
+  "pythonPolicy": "python-ast-1",
   "lcov": "coverage/lcov.info",
   "coverageCommand": "your coverage command"
 }
@@ -28,7 +29,11 @@ JS/TS `.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`, `.jsx` and `.tsx` use runtim
 
 `--cc-only` measures the complexity floor without touching coverage. Complexity 6 or more fails at any coverage; split the function, more tests cannot help. This mode rejects explicit `--lcov` and `--coverage-command` and ignores the configured coverage command. It cannot prove a full CRAP pass.
 
-## Python adapter: python-ast-1
+## Python measurement policies
+
+`lib/python/policies.json` is the supported policy enum. `--python-policy` overrides config `pythonPolicy`. The default is `python-ast-1`; no filename, project or consumer policy automatically selects another convention. The direct adapter stdin protocol is `{text, file, policy?, oracles?}` using exact original source and its project-relative POSIX filename. Node callers use `pythonDescriptors(text, file, root, policy?, oracles?)`. Unknown policies and malformed selectors are refused.
+
+### Default: python-ast-1
 
 Oracle qualification from source: test_* functions in test_*.py or *_test.py, Test* class methods and unittest.TestCase methods, each with an explicit reason string in the row; fixtures and setup (pytest fixtures, setUp/tearDown, conftest bodies) classified separately and never as oracles; nested classes, methods, closures and callbacks are independently owned rows that qualify only on their own merits, never by their parent; the assertion-statement surcharge is removed only on qualified oracle rows, and every decision inside an assert predicate or message is counted on every row.
 
@@ -37,6 +42,28 @@ The shipped `lib/python/crap_adapter.py` walks actual source with Python's stdli
 A body starts at 1. Add one for each `if`, conditional expression, `for`/`async for`, `while` and exception handler; one per short-circuit boolean operator; one per comprehension generator and filter; one per non-wildcard match case and per guard. Assertions add one except on qualified oracle bodies. Traversal still enters their predicates and messages, including f-string expressions. Nested bodies own their decisions and fingerprints, so editing only a closure doesn't raise its enclosing body's score. Decorators are preserved in source fingerprints; they do not add body decisions.
 
 Test filename patterns qualify test functions and Test* methods; source-resolved `unittest.TestCase` bases also qualify methods outside those filenames. Import aliases for `pytest.fixture` and `unittest.TestCase` are recognized. Setup/teardown names in test modules or TestCase methods and every conftest body remain fixture/setup, retaining their assert surcharge. A Session class nested inside a test function gets production methods, not inherited oracle status.
+
+### Opt-in: python-radon-6.0.1-oracle-1
+
+Ordinary production, setup, fixture and helper bodies follow the inspected Radon 6.0.1 visitor decisions: loops add one plus a nonempty else; try adds its handlers plus a nonempty else; match adds its case count minus any wildcard, with no separate guard surcharge. Predicate decisions in match guards still count. Ordinary asserts add one and stop traversal of their predicates/messages, exactly as native Radon does. Qualified oracle asserts drop only that statement surcharge and retain decisions in predicates, messages, comprehensions and f-strings. Independent nested method/closure/lambda ownership remains the shared source adapter's contract. Radon is neither installed nor executed at runtime.
+
+Without an explicit collection, source-name qualification requires a test_* definition in test_*.py or *_test.py, or a test_* method of a source-resolved unittest.TestCase subclass. Test*/TestCase membership alone never qualifies a helper. Fixture/setup rules take precedence. These static filename/name/import rules establish no runtime collection, unshadowed symbols, human intent or assertion execution.
+
+Config `pythonOracles`, Node option `pythonOracles` and protocol `oracles` accept an optional authoritative allowlist for this policy only:
+
+```json
+{
+  "pythonPolicy": "python-radon-6.0.1-oracle-1",
+  "pythonOracles": [
+    { "file": "tests/test_subject.py", "name": "_assert_unchanged", "reason": "snapshot invariant oracle" },
+    { "file": "tests/test_subject.py", "name": "TestSubject.test_replacement", "reason": "replacement invariant oracle" }
+  ]
+}
+```
+
+An absent collection uses source-name rules. A supplied empty array qualifies no oracles. A supplied collection qualifies only its exact independently owned bodies; unlisted test_* names and nested children use native ordinary semantics. Each entry must contain exactly file/name/reason as nonempty strings, with an exact relative POSIX .py path and source-qualified body name, no patterns or traversal. Duplicate/conflicting entries, missing/ambiguous body matches and attempts to select fixtures/setup are refused. The full gate also refuses entries outside its selected source scope; it never scans unrelated sources. A direct single-file packet ignores entries for other files, and validates matches for its own file. Baseline analysis restricts the same allowlist to bodies present in that baseline, allowing genuinely new selected bodies.
+
+Every Python row includes `measurementPolicy`, concrete `oracleReason` and `oracleSelector` (the exact explicit entry, or null for source-name/ordinary rows). The top-level gate report and Git receipt carry `pythonPolicy` and a supplied `pythonOracles` collection. The adapter identity remains python-ast-1 separately from the selected measurement policy. Explicit selection establishes qualification only, never execution or coverage. Consumer adoption/settings/permissions and fresh independent exact-source acceptance remain separate authorities.
 
 Python compiles the exact parsed source with optimization disabled to inventory executable bytecode lines, then attributes that inventory to each body's owned AST lines, excluding nested bodies. Every inventoried line needs an explicit DA record. Independently owned bodies on the same executable source line are unverified because line coverage cannot separate them. Put those bodies on separate lines for per-function proof. Missing records, excluded statements and ambiguous multiline normalization are unverified, never guessed zero or full coverage. An explicit zero-hit DA record is measured zero. Docstrings and optimized-away statements that produce no bytecode lines do not enter the denominator; an empty inventory remains unverified. Python keeps the same hash proof, strict threshold and physical base comparison.
 
@@ -62,7 +89,7 @@ Exit codes: 0 for passed, nothing to score or informational-only rows; 1 for a s
 
 Every completed Git gate run writes `.claude/quality-gate/receipts/<head-sha>.json`, replacing that HEAD's previous run atomically. Prerequisite and unverified runs also write a receipt when HEAD exists. No receipt is written outside a repository with a committed HEAD.
 
-Schema: `gateVersion` (`crap-1`), `project` (measured root), `base`, `head`, `files` (relative path to SHA-256 map), `rowCounts` (`new`, `modified-raised`, `legacy-unchanged`, `unverified`), `verdict`, `timestamp`, `ccOnly` and `reasons`. Verdicts are `passed`, `failed`, `unverified` or `nothing to score`. Informational-unverified rows still produce an unverified receipt, even with exit 0. A prerequisite receipt has an empty file map and its reason.
+Schema: `gateVersion` (`crap-1`), `pythonPolicy`, optional `pythonOracles`, `project` (measured root), `base`, `head`, `files` (relative path to SHA-256 map), `rowCounts` (`new`, `modified-raised`, `legacy-unchanged`, `unverified`), `verdict`, `timestamp`, `ccOnly` and `reasons`. Verdicts are `passed`, `failed`, `unverified` or `nothing to score`. Informational-unverified rows still produce an unverified receipt, even with exit 0. A prerequisite receipt has an empty file map and its reason.
 
 Hooks aren't installed here. A consumer must compare the receipt's root, HEAD and file hashes with the current tree; it must not accept `ccOnly`, `nothing to score`, failed or unverified as a full CRAP pass. The Q3 consumers report unverified receipts once per session, avoiding repeated blocking loops.
 

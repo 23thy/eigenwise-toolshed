@@ -6,7 +6,7 @@ import { crapScore, enforcedMetrics, THRESHOLD } from './measure.mjs';
 import { JAVASCRIPT_SOURCE, projectRoot, readConfig, gateSettings, selectedFiles, sourceHashes, baseRevision, runGit, tryGit } from './crap-inputs.mjs';
 import { acquireCoverage, coverageByFile, coverageTrust, functionLineCoverage } from './lcov.mjs';
 import { lizardDescriptors } from './lizard.mjs';
-import { pythonDescriptors } from './python.mjs';
+import { pythonDescriptors, verifyOracleOwnership } from './python.mjs';
 
 export const GATE_VERSION = 'crap-1';
 
@@ -14,16 +14,16 @@ function unsupportedDescriptor(text, file, reason) {
   return [{ identity: `<root>/unsupported:${file}#0`, parent: '<root>', name: file, line: 1, endLine: text.split('\n').length, complexity: null, fingerprint: crypto.createHash('sha256').update(text).digest('hex'), unverified: reason, informational: true }];
 }
 
-async function descriptors(text, file, analyzer, complexityCsv, root) {
+async function descriptors(text, file, analyzer, complexityCsv, root, policy, oracles) {
   if (JAVASCRIPT_SOURCE.test(file)) return (await analyzer.collectFunctions(text, file)).map((descriptor) => ({ ...descriptor, endLine: text.slice(0, descriptor.end).split('\n').length, source: 'typescript-ast' }));
-  if (file.endsWith('.py')) return pythonDescriptors(text, file, root);
+  if (file.endsWith('.py')) return pythonDescriptors(text, file, root, policy, oracles);
   const rows = await lizardDescriptors(text, file, analyzer, complexityCsv);
   if (!rows.length) return unsupportedDescriptor(text, file, 'Lizard reported no functions; source definitions are unverified. Install a supported language adapter to verify this file.');
   return rows.map((row) => ({ ...row, informational: Boolean(row.unverified) }));
 }
 
-async function sourceMetrics(root, files, analyzer, complexityCsv) {
-  return (await Promise.all(files.map(async (file) => (await descriptors(fs.readFileSync(path.resolve(root, file), 'utf8'), file, analyzer, complexityCsv, root)).map((descriptor) => ({ ...descriptor, relativePath: file }))))).flat();
+async function sourceMetrics(root, files, analyzer, complexityCsv, policy, oracles) {
+  return (await Promise.all(files.map(async (file) => (await descriptors(fs.readFileSync(path.resolve(root, file), 'utf8'), file, analyzer, complexityCsv, root, policy, oracles)).map((descriptor) => ({ ...descriptor, relativePath: file }))))).flat();
 }
 
 function scoredMetric(metric, report, input, lines) {
@@ -59,7 +59,16 @@ function emptyScopeReason(files, metrics, changed) {
 
 async function changedAgainstBase(report, analyzer) {
   if (!report.base) return report.metrics.map((metric) => ({ ...metric, classification: 'new' }));
-  const readBaseline = async (base, file) => descriptors(runGit(report.root, ['show', `${base}:${file}`]), file, analyzer, undefined, report.root);
+  const readBaseline = async (base, file) => {
+    const text = runGit(report.root, ['show', `${base}:${file}`]);
+    let oracles = report.pythonOracles;
+    if (file.endsWith('.py') && oracles?.length) {
+      const baseline = await descriptors(text, file, analyzer, undefined, report.root, report.pythonPolicy, []);
+      const names = new Set(baseline.map((row) => row.name));
+      oracles = oracles.filter((entry) => entry.file === file && names.has(entry.name));
+    }
+    return descriptors(text, file, analyzer, undefined, report.root, report.pythonPolicy, oracles);
+  };
   return changedMetricsAgainstBase(report.metrics, Object.keys(report.files), report.base, readBaseline);
 }
 
@@ -71,8 +80,9 @@ export async function crapReport(options = {}) {
   const analyzer = files.some((file) => JAVASCRIPT_SOURCE.test(file) || file.endsWith('.vue')) ? await createAnalyzer(root) : null;
   const complexityCsv = options.complexity ? fs.readFileSync(path.resolve(root, options.complexity), 'utf8') : undefined;
   const baseline = baseRevision(root, settings.base);
-  const report = { root, base: baseline.base, files: sourceHashes(root, files), metrics: await sourceMetrics(root, files, analyzer, complexityCsv), ccOnly: Boolean(options.ccOnly), max: THRESHOLD, warnings: [...warnings, ...baseline.warnings] };
+  const report = { root, base: baseline.base, files: sourceHashes(root, files), pythonPolicy: settings.pythonPolicy, pythonOracles: settings.pythonOracles, metrics: await sourceMetrics(root, files, analyzer, complexityCsv, settings.pythonPolicy, settings.pythonOracles), ccOnly: Boolean(options.ccOnly), max: THRESHOLD, warnings: [...warnings, ...baseline.warnings] };
   if (settings.usedDeprecatedRatchet) report.warnings.push('--ratchet and config ratchet are deprecated. Use --base or config base instead.');
+  verifyOracleOwnership(report.metrics, settings.pythonOracles);
   report.changedMetrics = await changedAgainstBase(report, analyzer);
   report.nothingToScoreReason = emptyScopeReason(files, report.metrics, report.changedMetrics);
   return measureReport(report, settings);
@@ -91,7 +101,7 @@ export function writeReceipt(report) {
   if (!head) return null;
   const rowCounts = Object.fromEntries(['new', 'modified-raised', LEGACY_UNCHANGED].map((classification) => [classification, report.changedMetrics.filter((metric) => metric.classification === classification).length]));
   rowCounts.unverified = report.unverified.length;
-  const receipt = { gateVersion: GATE_VERSION, project: report.root, base: report.base, head, files: report.files, rowCounts, verdict: report.verdict, timestamp: new Date().toISOString(), ccOnly: report.ccOnly, reasons: report.unverified.map((metric) => `${metric.relativePath}:${metric.line} ${metric.name}: ${metric.unverified}`) };
+  const receipt = { gateVersion: GATE_VERSION, pythonPolicy: report.pythonPolicy, pythonOracles: report.pythonOracles, project: report.root, base: report.base, head, files: report.files, rowCounts, verdict: report.verdict, timestamp: new Date().toISOString(), ccOnly: report.ccOnly, reasons: report.unverified.map((metric) => `${metric.relativePath}:${metric.line} ${metric.name}: ${metric.unverified}`) };
   const directory = path.join(report.root, '.claude/quality-gate/receipts');
   fs.mkdirSync(directory, { recursive: true });
   const target = path.join(directory, head + '.json');
@@ -103,7 +113,7 @@ export function writeReceipt(report) {
 
 function pythonClassificationLabel(metric) {
   if (!metric.adapterVersion) return '';
-  return ` adapter=${metric.adapterVersion} role=${metric.oracleClassification} (${metric.oracleReason})`;
+  return ` adapter=${metric.adapterVersion} role=${metric.oracleClassification} (${metric.oracleReason}) policy=${metric.measurementPolicy}`;
 }
 
 function metricLine(metric, ccOnly) {

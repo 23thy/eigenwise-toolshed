@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { pythonPolicy, pythonOracles } from './python.mjs';
 
 export const JAVASCRIPT_SOURCE = /\.(?:[cm]?[jt]s|[jt]sx)$/i;
 const SOURCE = /\.(?:[cm]?[jt]s|[jt]sx|py|php|vue)$/i;
@@ -43,7 +44,7 @@ function parseConfig(configPath) {
 function validateConfig(config) {
   if (Object.prototype.toString.call(config) !== '[object Object]') throw new Error('Config must be a JSON object');
   for (const key of ['sources', 'exclude']) validateStringArray(config[key], key);
-  for (const key of ['base', 'ratchet', 'lcov', 'coverageCommand']) validateString(config[key], key);
+  for (const key of ['base', 'ratchet', 'lcov', 'coverageCommand', 'pythonPolicy']) validateString(config[key], key);
 }
 
 function validateStringArray(value, key) {
@@ -67,7 +68,9 @@ function assertCcOnlyOptions(options) {
 export function gateSettings(options, config) {
   assertCcOnlyOptions(options);
   if (Number(firstDefined([options.max, config.max, 6])) !== 6) throw new Error('The CRAP threshold is fixed at 6. Remove max from the command or config.');
+  const policy = pythonPolicy(firstDefined([options.pythonPolicy, config.pythonPolicy]));
   return {
+    pythonPolicy: policy, pythonOracles: pythonOracles(Object.hasOwn(options, "pythonOracles") ? options.pythonOracles : config.pythonOracles, policy),
     sources: config.sources?.length ? config.sources : ['.'], exclude: firstDefined([config.exclude, []]),
     base: firstDefined([options.base, config.base, options.ratchet, config.ratchet]),
     lcov: firstDefined([options.lcov, config.lcov]), coverageCommand: firstDefined([options.coverageCommand, config.coverageCommand]),
