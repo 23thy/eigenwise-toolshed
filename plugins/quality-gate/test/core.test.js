@@ -72,7 +72,7 @@ test('measure consumes real V8 coverage, preserves report JSON and fails at six'
     const coverage = path.join(root, 'coverage');
     await fs.mkdir(coverage);
     assert.deepEqual(await fs.readdir(coverage), []);
-    const execution = runNode(['--input-type=module', '-e', `const { subject } = await import(${JSON.stringify(pathToFileURL(subject).href)}); for (let value = 0; value <= 5; value += 1) subject(value);`], { cwd: project, env: { ...process.env, NODE_V8_COVERAGE: coverage } });
+    const execution = runNode(['--import', new URL('../lib/core.mjs', import.meta.url).href, '--input-type=module', '-e', `const { subject } = await import(${JSON.stringify(pathToFileURL(subject).href)}); for (let value = 0; value <= 5; value += 1) subject(value);`], { cwd: project, env: { ...process.env, QUALITY_GATE_V8_CAPTURE: coverage } });
     assert.equal(execution.status, 0, execution.stderr);
     const report = await measureFiles(['subject.mjs'], { projectRoot: project, base, coverageDirectory: coverage });
     assert.equal(report.changedMetrics[0].crap, 6);
@@ -147,13 +147,13 @@ test('the added branch moved into a new helper above the caller passes while the
   assert.deepEqual(verdict, { failures: [], unverified: [] });
 });
 
-test('named build records cover their source function and exclude unrelated names or absent ranges', () => {
+test('unbound named build records never establish source ownership', () => {
   const descriptor = { identity: '<root>/FunctionDeclaration:subject#0', parent: '<root>', name: 'subject', start: 0, end: 10 };
   const source = { descriptors: [descriptor], records: [] };
   const matched = { functionName: 'subject', ranges: [{ startOffset: 100, endOffset: 110, count: 1 }] };
   const unrelated = { functionName: 'another', ranges: [{ startOffset: 100, endOffset: 110, count: 1 }] };
-  assert.deepEqual(functionCoverage(descriptor, [source, { records: [matched, unrelated, { functionName: 'subject', ranges: [] }] }]), { coverage: 1 });
-  assert.deepEqual(functionCoverage(descriptor, [source, { records: [unrelated] }]), { coverage: 0 });
+  assert.match(functionCoverage(descriptor, [source, { records: [matched, unrelated, { functionName: 'subject', ranges: [] }] }]).unverified, /capture binding/);
+  assert.match(functionCoverage(descriptor, [source, { records: [unrelated] }]).unverified, /capture binding/);
 });
 
 test('the measurement entry refuses incomplete arguments', () => {

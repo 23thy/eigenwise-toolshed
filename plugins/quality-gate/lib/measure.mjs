@@ -3,7 +3,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createAnalyzer, changedMetricsAgainstBase, readCoverage, functionCoverage, normalizedPath, LEGACY_UNCHANGED } from './core.mjs';
 
-const NO_COVERAGE_RECORD = 'no suite loaded this file, so it has no coverage record (a script only ever spawned as a child process is covered once the spawning test passes NODE_V8_COVERAGE through; see scripts/quality/README.md)';
+const NO_COVERAGE_RECORD = 'no suite loaded this file, so it has no coverage record (a child process needs QUALITY_GATE_V8_CAPTURE and the shared core preload in NODE_OPTIONS; see scripts/quality/README.md)';
 export const THRESHOLD = 6;
 
 export function enforcedMetrics(changedMetrics) {
@@ -31,10 +31,11 @@ export async function readOutput(outputPath, coverageScripts, needsFunctions, { 
     return null;
   }
   return {
+    filePath: normalizedPath(outputPath),
     relativePath: path.relative(projectRoot, outputPath).replaceAll('\\', '/'),
     text,
     descriptors: needsFunctions ? await analyzer.collectFunctions(text, outputPath) : [],
-    captures: await Promise.all((coverageScripts.get(normalizedPath(outputPath)) ?? []).map(async (capture) => ({ ...capture, descriptors: typeof capture.text === 'string' ? await analyzer.collectFunctions(capture.text, outputPath + '.js') : [] }))),
+    captures: await Promise.all((coverageScripts.get(normalizedPath(outputPath)) ?? []).map(async (capture) => ({ ...capture, filePath: outputPath, descriptors: typeof capture.text === 'string' ? await analyzer.collectFunctions(capture.text, outputPath + '.js') : [] }))),
   };
 }
 
@@ -57,7 +58,7 @@ export async function measureSource(sourcePath, coverageScripts, { projectRoot, 
       complexity: descriptor.complexity,
       relativePath,
     };
-    const { coverage, unverified } = loaded ? await functionCoverage(descriptor, outputs, analyzer) : { unverified: NO_COVERAGE_RECORD };
+    const { coverage, unverified } = loaded ? functionCoverage(descriptor, outputs) : { unverified: NO_COVERAGE_RECORD };
     if (unverified) return { ...metric, unverified };
     return { ...metric, coverage, crap: crapScore(descriptor.complexity, coverage) };
   }));

@@ -164,14 +164,18 @@ function positionAt(starts, offset) {
 }
 
 export function originalOffsetMapper(cacheEntry, originalText, generatedText) {
+  if (cacheEntry.data.sources.length !== 1) throw new Error('Only single-source compiler maps are supported.');
+  if (cacheEntry.data.sourcesContent.length !== 1) throw new Error('Compiler map source content is ambiguous.');
+  if (cacheEntry.data.sourcesContent[0] !== originalText) throw new Error('Compiler map source bytes do not match.');
   const sourceMap = new SourceMap(cacheEntry.data);
   const generatedStarts = lineStarts(cacheEntry.lineLengths);
   const originalStarts = lineStarts(originalText.split('\n').map((line) => line.length));
   return (offset) => {
     const { line, column } = positionAt(generatedStarts, offset);
     const entry = sourceMap.findEntry(line, column);
-    if (entry.originalLine === undefined) return null;
+    if (!Number.isInteger(entry.originalLine)) return null;
     const original = originalStarts[entry.originalLine] + entry.originalColumn;
+    if (typeof originalText[original] !== 'string') return null;
     const generated = generatedStarts[entry.generatedLine] + entry.generatedColumn;
     const delta = offset - generated;
     if (generatedText.slice(generated, offset) !== originalText.slice(original, original + delta)) return null;
@@ -181,7 +185,7 @@ export function originalOffsetMapper(cacheEntry, originalText, generatedText) {
 
 export function remapRecords(records, toOriginal) {
   return records.flatMap((record) => {
-    const ranges = record.ranges.map((range) => ({ ...range, startOffset: toOriginal(range.startOffset), endOffset: toOriginal(range.endOffset) }));
+    const ranges = record.ranges.map((range) => ({ ...range, startOffset: toOriginal(range.startOffset), endOffset: toOriginal(range.endOffset, true) }));
     if (ranges.some((range) => range.startOffset === null || range.endOffset === null)) return [];
     return [{ ...record, ranges }];
   });
@@ -242,38 +246,51 @@ function embeddedSourceMap(text) {
 function mappedSource(capture, source) {
   if (capture.text === source.text) return (offset) => offset;
   const data = embeddedSourceMap(capture.text);
-  if (!data || data.sourcesContent?.length !== 1 || data.sourcesContent[0] !== source.text) return null;
-  return originalOffsetMapper({ data, lineLengths: capture.text.split('\n').map((line) => line.length) }, source.text, capture.text);
+  try {
+    const originalPath = path.resolve(path.dirname(capture.filePath), data.sourceRoot ?? '', data.sources[0]);
+    if (normalizedPath(originalPath) !== source.filePath) return null;
+    return originalOffsetMapper({ data, lineLengths: capture.text.split('\n').map((line) => line.length) }, source.text, capture.text);
+  } catch {
+    return null;
+  }
 }
 
 function runtimeBodyRecords(descriptor, source, capture) {
   if (capture.unverified) return capture;
   const toOriginal = mappedSource(capture, source);
   if (!toOriginal) return { unverified: `executed bytes differ from ${source.relativePath}; an authentic matching source map is required` };
-  const twins = capture.descriptors.filter((candidate) => toOriginal(candidate.bodyStart) === descriptor.bodyStart && toOriginal(candidate.end) === descriptor.end);
+  const twins = capture.descriptors.filter((candidate) => toOriginal(candidate.bodyStart) === descriptor.bodyStart && toOriginal(candidate.end - 1) === descriptor.end - 1);
   if (twins.length !== 1) return { unverified: 'missing or ambiguous source-map correspondence for the owned runtime body' };
   const twin = twins[0];
   const records = capture.records.filter((record) => record.ranges[0]?.startOffset === twin.runtimeStart && record.ranges[0]?.endOffset === twin.end);
-  if (records.length !== 1) return { unverified: 'missing or ambiguous exact runtime range for the owned function body' };
+  if (records.length > 1) return { unverified: 'ambiguous exact runtime range for the owned function body' };
   return { records, toOriginal };
+}
+
+function mappedEnd(offset, toOriginal) {
+  const last = toOriginal(offset - 1);
+  return last === null ? null : last + 1;
 }
 
 function outputCoverage(descriptor, source, output) {
   const intervals = [];
+  let measured = 0;
   for (const capture of output.captures) {
     const owned = runtimeBodyRecords(descriptor, source, capture);
     if (owned.unverified) return owned;
-    const mapped = remapRecords(owned.records, owned.toOriginal);
+    if (!owned.records.length) continue;
+    measured += 1;
+    const mapped = remapRecords(owned.records, (offset, isEnd) => isEnd ? mappedEnd(offset, owned.toOriginal) : owned.toOriginal(offset));
     if (!mapped.length) return { unverified: 'a runtime coverage boundary has no exact source-map correspondence' };
     intervals.push(...coverageIntervals(mapped[0].ranges));
   }
-  return { intervals };
+  return { intervals, measured };
 }
 
 function ownBodyIntervals(descriptor, descriptors) {
-  const nested = descriptors.filter((candidate) => candidate.parent === descriptor.identity);
+  const nested = descriptors.filter((candidate) => candidate.parent === descriptor.identity && candidate.end > descriptor.bodyStart);
   const intervals = [];
-  let start = descriptor.bodyStart;
+  let start = nested.some((child) => child.start === descriptor.bodyStart && child.end === descriptor.end) ? descriptor.runtimeStart : descriptor.bodyStart;
   for (const child of nested) {
     intervals.push([start, child.start]);
     start = child.end;
@@ -289,6 +306,7 @@ export function functionCoverage(descriptor, outputs) {
   if (!measured.length) return { unverified: 'no executed-byte capture for the owned function body' };
   const unverified = measured.find((result) => result.unverified);
   if (unverified) return unverified;
+  if (!measured.some((result) => result.measured)) return { unverified: 'no captured exact runtime range for the owned function body' };
   const covered = mergeIntervals(measured.flatMap((result) => result.intervals));
   const owned = ownBodyIntervals(descriptor, source.descriptors);
   const total = owned.reduce((length, [start, end]) => length + end - start, 0);
