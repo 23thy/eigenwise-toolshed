@@ -6,13 +6,15 @@ The shared AST, function identity and V8 coverage core lives in `plugins/quality
 
     CRAP = complexity² × (1 − coverage)³ + complexity
 
-Only new complexity the change introduced is enforced. Every changed function lands in one of three report sections, and the summary line carries their counts:
+Every new or physically modified owned body must score strictly below 6 with measured coverage. Exact source bytes determine changes, so comments and formatting count. Untouched legacy bodies stay outside scope; an independently edited nested body does not charge its parent. Explicit user/project rules remain authoritative.
 
-- **NEW**: no partner at the base. Must score strictly below 6 with measured coverage.
-- **MODIFIED-RAISED**: has a partner and its cyclomatic complexity went up. Must score strictly below 6, or the added branches move into a new helper that does.
-- **LEGACY-UNCHANGED**: has a partner and its complexity is equal or lower. Printed as a `LEGACY` row with its number, informational only: it never fails, never counts as UNVERIFIED and never touches the exit code, so a pass-through edit inside a big legacy function is not a refactor demand.
+Every changed function lands in one of three reporting sections:
 
-The exit code is 1 only when a NEW or MODIFIED-RAISED row fails or is unverified. Report a LEGACY row with its number; do not rewrite the function to satisfy the gate.
+- **NEW**: no partner at the base.
+- **MODIFIED-RAISED**: has a partner and its complexity rose.
+- **LEGACY-UNCHANGED**: physically modified with equal or lower complexity.
+
+All three sections use PASS, FAIL or UNVERIFIED rows. The exit code is 1 when any changed row fails or is unverified. Classifications never exempt a changed body. A score of 6 fails before display rounding.
 
 Coverage is native V8 precise block coverage. The existing suite runner preloads the shared core through `NODE_OPTIONS` and sets `QUALITY_GATE_V8_CAPTURE` to an empty capture directory. The core records coverage and executed script text through the same inspector session. Child processes inherit both settings when their environment is passed through. Raw `NODE_V8_COVERAGE` reports cannot prove executed bytes and are UNVERIFIED.
 
@@ -27,7 +29,7 @@ Coverage is native V8 precise block coverage. The existing suite runner preloads
 
 ## Rows that are UNVERIFIED
 
-An UNVERIFIED row in the NEW or MODIFIED-RAISED section fails the gate like a FAIL does (a LEGACY row stays informational either way), and says why:
+Every UNVERIFIED changed row fails the gate like a FAIL does and says why:
 
 - **no analyzer**: a changed source in another language (`.cs`, `.py`, `.sh`, `.ps1`, `.svelte`, `.tsx`, `.jsx`) prints one row for the file. The gate has nothing to measure it with; say so in the report rather than claiming a score.
 - **no suite loaded this file**: no capture contains this file. Zero hits for an exactly owned runtime body is measured zero coverage; an absent record is a measurement gap. A child-process test must pass through `QUALITY_GATE_V8_CAPTURE` and the core preload in `NODE_OPTIONS`.

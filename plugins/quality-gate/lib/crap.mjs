@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createAnalyzer, changedMetricsAgainstBase, normalizedPath, LEGACY_UNCHANGED } from './core.mjs';
-import { crapScore, THRESHOLD } from './measure.mjs';
+import { crapScore, enforcedMetrics, THRESHOLD } from './measure.mjs';
 import { JAVASCRIPT_SOURCE, projectRoot, readConfig, gateSettings, selectedFiles, sourceHashes, baseRevision, runGit, tryGit } from './crap-inputs.mjs';
 import { acquireCoverage, coverageByFile, coverageTrust, functionLineCoverage } from './lcov.mjs';
 import { lizardDescriptors } from './lizard.mjs';
@@ -38,7 +38,7 @@ function scoredMetric(metric, report, input, lines) {
 }
 
 function verdict(report) {
-  const enforced = report.changedMetrics.filter((metric) => metric.classification !== LEGACY_UNCHANGED && !metric.informational);
+  const enforced = enforcedMetrics(report.changedMetrics).filter((metric) => !metric.informational);
   report.failures = enforced.filter((metric) => !metric.unverified && metric.crap >= THRESHOLD);
   report.unverified = report.changedMetrics.filter((metric) => metric.unverified);
   const blockingUnverified = enforced.some((metric) => metric.unverified);
@@ -82,7 +82,7 @@ function measureReport(report, settings) {
   const input = report.ccOnly || !report.changedMetrics.length ? null : acquireCoverage(report.root, settings, Object.keys(report.files));
   const lines = input ? coverageByFile(input.text, report.root) : new Map();
   report.changedMetrics = report.changedMetrics.map((metric) => scoredMetric(metric, report, input, lines));
-  report.checked = report.changedMetrics.filter((metric) => metric.classification !== LEGACY_UNCHANGED && !metric.informational).length;
+  report.checked = enforcedMetrics(report.changedMetrics).filter((metric) => !metric.informational).length;
   return verdict(report);
 }
 
@@ -109,7 +109,7 @@ function pythonClassificationLabel(metric) {
 function metricLine(metric, ccOnly) {
   const label = `${metric.relativePath}:${metric.line} ${metric.name}${pythonClassificationLabel(metric)}`;
   if (metric.unverified) return `UNVERIFIED ${label}: ${metric.unverified}`;
-  const prefix = metric.classification === LEGACY_UNCHANGED ? 'LEGACY' : ['PASS', 'FAIL'][Number(metric.crap >= THRESHOLD)];
+  const prefix = ['PASS', 'FAIL'][Number(metric.crap >= THRESHOLD)];
   const measured = ccOnly ? ' (cc-only, no coverage)' : ` coverage=${(metric.coverage * 100).toFixed(2)}%`;
   const advice = metric.complexity >= THRESHOLD ? '; fails at any coverage, split the function, more tests cannot help' : '';
   return `${prefix} ${label} cc=${metric.complexity}${measured} CRAP=${metric.crap.toFixed(4)} source=${metric.source}${advice}`;
@@ -118,5 +118,5 @@ function metricLine(metric, ccOnly) {
 export function formatCrapReport(report) {
   if (report.nothingToScoreReason) return `CRAP gate: nothing to score. ${report.nothingToScoreReason}\n`;
   const rows = report.changedMetrics.length ? report.changedMetrics : report.unverified;
-  return rows.map((metric) => metricLine(metric, report.ccOnly)).join('\n') + `\nCRAP gate ${report.verdict}: ${report.failures.length} failures, ${report.unverified.length} unverified; ${report.checked} new or modified-raised functions checked (strictly below ${THRESHOLD}).\n`;
+  return rows.map((metric) => metricLine(metric, report.ccOnly)).join('\n') + `\nCRAP gate ${report.verdict}: ${report.failures.length} failures, ${report.unverified.length} unverified; ${report.checked} new or physically modified functions checked (strictly below ${THRESHOLD}).\n`;
 }

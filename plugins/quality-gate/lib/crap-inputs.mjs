@@ -9,7 +9,7 @@ const SOURCE = /\.(?:[cm]?[jt]s|[jt]sx|py|php|vue)$/i;
 export function runGit(root, argumentsList) {
   const result = spawnSync('git', argumentsList, { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 30000, maxBuffer: 64 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(`git ${argumentsList[0]} failed: ${result.stderr || result.error?.message}. Check the project path and base revision, then rerun the gate.`);
-  return result.stdout.trim();
+  return argumentsList[0] === 'show' ? result.stdout : result.stdout.trim();
 }
 
 export function tryGit(root, argumentsList) {

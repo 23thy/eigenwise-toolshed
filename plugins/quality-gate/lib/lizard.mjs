@@ -27,6 +27,10 @@ function phpDefinitions(text) {
   return [...code.matchAll(/\bfunction\s*&?\s*([\w]*)\s*\(/g)].map((match) => ({ name: match[1] || '(anonymous)', line: code.slice(0, match.index).split('\n').length }));
 }
 
+function overlappingSpan(row, rows) {
+  return rows.some((other) => other !== row && other.line <= row.endLine && row.line <= other.endLine);
+}
+
 function boundRows(rows, definitions, text) {
   const counts = new Map();
   return rows.map((row) => {
@@ -34,7 +38,8 @@ function boundRows(rows, definitions, text) {
     counts.set(row.name, ordinal + 1);
     const definition = definitions.find((candidate) => candidate.line === row.line && candidate.name === row.name);
     const identity = `<root>/lizard:${row.name}#${ordinal}`;
-    const fingerprint = crypto.createHash('sha256').update(text.split('\n').slice(row.line - 1, row.endLine).join('\n').replace(/\s+/g, ' ')).digest('hex');
+    const fingerprint = definition?.fingerprint ?? crypto.createHash('sha256').update(text.split('\n').slice(row.line - 1, row.endLine).join('\n')).digest('hex');
+    if (overlappingSpan(row, rows)) return { ...row, identity, parent: '<root>', fingerprint, source: 'lizard', unverified: 'Overlapping Lizard spans cannot establish independent body ownership; measurement is unverified. Use a supported source adapter for nested or shared-line bodies.' };
     return { ...row, identity, parent: '<root>', fingerprint, source: 'lizard', ...(definition ? {} : { unverified: 'Lizard row cannot be bound to a source definition; informational only. Update the language adapter to measure this body.' }) };
   });
 }
