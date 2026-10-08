@@ -47,7 +47,7 @@ function argumentsForCommand() {
 
 async function runMeasure(values, files) {
   const externalNewFiles = values['new-external-file'] ?? [];
-  if (!values.coverage) throw new Error('measure requires --coverage <V8-directory>; run quality-gate --help for capture instructions');
+  if (!values.coverage) throw new Error('Usage: quality-gate measure requires --coverage <V8-directory>; run quality-gate --help for capture instructions');
   if (files.length + externalNewFiles.length === 0) throw new Error('measure requires repository files or --new-external-file <absolute path>');
   const report = await measureFiles(files, { projectRoot: path.resolve(values.project || process.cwd()), base: values.base, coverageDirectory: path.resolve(values.coverage), externalNewFiles });
   process.stdout.write(JSON.stringify(report) + '\n');
