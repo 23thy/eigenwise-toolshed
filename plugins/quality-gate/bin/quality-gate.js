@@ -13,8 +13,8 @@ const HELP = `Usage:
 
 crap reads .claude/quality-gate/crap.json (falls back to .claude/quartermaster/crap.json).
 --project selects the tree measured, including a linked worktree; without it the cwd's Git root is used.
-JS/TS runtime functions use the TypeScript AST, PHP/Vue use lizard. Python is informational-unverified
-until its adapter ships. No JavaScript or TypeScript lizard row is scored, including --complexity input.
+JS/TS runtime functions use the TypeScript AST, PHP/Vue use lizard. Python uses the versioned
+stdlib AST adapter through python3 or py -3 (no radon dependency), with qualified oracle rows. No JavaScript or TypeScript lizard row is scored, including --complexity input.
 Only new and modified-raised functions must score strictly below 6. Legacy-unchanged rows are informational.
 --base defaults to the local develop, main or master branch; HEAD means score all selected bodies.
 --cc-only checks the complexity floor without running coverage; it cannot prove a full CRAP pass.
