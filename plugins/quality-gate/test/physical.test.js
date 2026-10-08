@@ -134,3 +134,30 @@ test('comment-only and formatting-only CC6 fail with genuine complete same-sessi
     assert.equal(report.failures.length, 1);
   }
 });
+
+for (const fixture of [
+  { label: 'lambda-decorated nested class', body: '    @(lambda decorated: decorated)\n    class Local:\n        def child(self):\n            return 1\n', before: '            return 1', after: '            return 2', child: 'outer.Local.child', identity: '<root>/FunctionDef:outer#0/FunctionDef:outer.Local.child#0' },
+  { label: 'interleaved dictionary lambdas', body: '    callbacks = {\n        (lambda: 1): (lambda: 2),\n        (lambda: 3): (lambda: 4),\n    }\n', before: 'lambda: 3', after: 'lambda: 5', child: 'outer.<lambda>', identity: '<root>/FunctionDef:outer#0/Lambda:outer.<lambda>#1' },
+]) {
+  test('Python source-ordered ownership: ' + fixture.label, async (context) => {
+    const original = pythonBody.replace('subject', 'outer').replace('    return 0', fixture.body + '    return 0');
+    const { root, file, base } = await project(context, 'py', original);
+    const baseline = await crapReport({ project: root, base, ccOnly: true });
+    assert.equal(baseline.metrics[0].complexity, 6);
+    for (const scenario of [
+      { label: 'child-only edit preserves outer fingerprint and excludes legacy CC6 parent', text: original.replace(fixture.before, fixture.after), identity: fixture.identity, name: fixture.child, failures: [] },
+      { label: 'parent-owned edit selects and enforces CC6 parent', text: original.replace('    return 0', '    # parent-owned edit\n    return 0'), identity: '<root>/FunctionDef:outer#0', name: 'outer', failures: ['outer'] },
+    ]) {
+      await context.test(scenario.label, async () => {
+        await fs.writeFile(path.join(root, file), scenario.text);
+        const report = await crapReport({ project: root, base, ccOnly: true });
+        assert.deepEqual(report.metrics.filter((row, index) => row.fingerprint !== baseline.metrics[index].fingerprint).map((row) => row.identity), [scenario.identity], 'only independently edited body fingerprints change');
+        assert.deepEqual(report.changedMetrics.map((row) => row.identity), [scenario.identity], 'only independently edited bodies enter changed rows');
+        assert.deepEqual(report.changedMetrics.map((row) => row.name), [scenario.name]);
+        assert.deepEqual(report.failures.map((row) => row.name), scenario.failures, 'untouched legacy parent is excluded; parent-owned CC6 edits fail');
+        assert.equal(report.checked, 1);
+        assert.equal(report.exitCode, scenario.failures.length);
+      });
+    }
+  });
+}

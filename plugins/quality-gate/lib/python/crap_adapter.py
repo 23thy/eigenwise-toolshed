@@ -162,8 +162,8 @@ def nested_bodies(node):
 def owned_source_bytes(node, source, line_offsets):
     cursor, end = source_span(node, source, line_offsets)
     pieces = []
-    for nested in nested_bodies(node):
-        start, nested_end = source_span(nested, source, line_offsets)
+    spans = sorted(source_span(nested, source, line_offsets) for nested in nested_bodies(node))
+    for start, nested_end in spans:
         pieces.append(source[cursor:start])
         cursor = nested_end
     pieces.append(source[cursor:end])
