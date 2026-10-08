@@ -10,6 +10,7 @@ import { crapReport, formatCrapReport, writeReceipt } from '../lib/crap.mjs';
 import { createAnalyzer } from '../lib/core.mjs';
 import { coverageByFile, functionLineCoverage } from '../lib/lcov.mjs';
 import { lizardDescriptors, parseLizardCsv } from '../lib/lizard.mjs';
+import { crapScore } from '../lib/measure.mjs';
 import { gateSettings, projectRoot, readConfig, selectedFiles, sourceHashes, baseRevision } from '../lib/crap-inputs.mjs';
 
 const pluginRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -63,16 +64,16 @@ for (const [issue, file, expected] of [
   [493, 'function-type-alias.ts', [['send', 1], ['noop', 1]]],
   [490, 'expression-arrow.ts', [['viewOf', 2], ['pick', 3]]],
 ]) {
-  test(`GitHub #${issue}: exact reporter snippet finds only runtime bodies and passes the gate`, async (context) => {
+  test(`GitHub #${issue}: exact reporter snippet finds only runtime bodies and refuses unsupported LCOV completeness`, async (context) => {
     const text = await fs.readFile(path.join(pluginRoot, 'test/fixtures', file), 'utf8');
     assert.deepEqual((await analyzer.collectFunctions(text, file)).map((row) => [row.name, row.complexity]), expected);
     const root = await fixture(context, { [file]: text });
     await lcov(root, file, text);
     const report = await crapReport({ project: root });
-    assert.equal(report.exitCode, 0);
+    assert.equal(report.exitCode, expected.length ? 2 : 0);
     assert.deepEqual(report.changedMetrics.map((row) => [row.name, row.complexity]), expected);
     assert.equal(report.failures.length, 0);
-    assert.equal(report.unverified.length, 0);
+    assert.equal(report.unverified.length, expected.length);
   });
 }
 
@@ -147,16 +148,10 @@ test('unchanged bodies and nested-only edits respect independent AST ownership',
   assert.deepEqual(report.changedMetrics.map((row) => [row.name, row.classification]), [['inner', 'modified-raised']]);
 });
 
-test('unrounded scores below six pass even when display rounds to six', async (context) => {
-  const text = 'function subject(value) {\n if (value) return 1;\n if (value === 0) return 0;\n return -1;\n' + '\n'.repeat(99) + '}\n';
-  const root = await fixture(context, { 'source.js': text });
-  await lcov(root, 'source.js', text);
-  const records = 'SF:source.js\n' + Array.from({ length: 101 }, (_, index) => `DA:${index + 1},${Number(index >= 70)}`).join('\n') + '\nend_of_record\n';
-  await fs.writeFile(path.join(root, 'coverage/lcov.info'), records);
-  const report = await crapReport({ project: root });
-  assert.equal(report.exitCode, 0);
-  assert.ok(report.changedMetrics[0].crap < 6);
-  assert.equal(report.changedMetrics[0].crap.toFixed(2), '6.00');
+test('unrounded scores below six pass even when display rounds to six', () => {
+  const score = crapScore(3, 31 / 101);
+  assert.ok(score < 6);
+  assert.equal(score.toFixed(2), '6.00');
 });
 
 test('missing coverage, absent manifest and differing hashes stay unverified', async (context) => {
@@ -174,25 +169,26 @@ test('missing coverage, absent manifest and differing hashes stay unverified', a
   assert.equal((await crapReport({ project: root })).exitCode, 2);
 });
 
-test('zero coverage is measured and missing body lines are unverified', async (context) => {
+test('JS LCOV hits, zero hits and missing records cannot prove executable completeness', async (context) => {
   const text = 'function subject(value) { return value ? 1 : 0; }\n';
   const root = await fixture(context, { 'source.js': text });
   await lcov(root, 'source.js', text, 0);
   const report = await crapReport({ project: root });
-  assert.equal(report.exitCode, 1);
-  assert.equal(report.changedMetrics[0].crap, 6);
+  assert.equal(report.exitCode, 2);
+  assert.equal(report.changedMetrics[0].coverage, undefined);
+  assert.match(report.unverified[0].unverified, /executable-line completeness is unverified/);
   await fs.writeFile(path.join(root, 'coverage/lcov.info'), 'SF:source.js\nDA:100,1\nend_of_record\n');
   const unmeasured = await crapReport({ project: root });
   assert.equal(unmeasured.exitCode, 2);
-  assert.match(unmeasured.unverified[0].unverified, /No executable LCOV lines/);
+  assert.match(unmeasured.unverified[0].unverified, /executable-line completeness is unverified/);
 });
 
-test('LCOV merges duplicate files by maximum hits and excludes nested body lines', () => {
+test('LCOV merges duplicate files by maximum hits without inventing an executable inventory', () => {
   const files = coverageByFile('SF:source.js\nDA:1,0\nend_of_record\nSF:source.js\nDA:1,1\nDA:2,0\nend_of_record\n', '/project');
   assert.deepEqual([...files.values()][0].get(1), 1);
   const outer = { identity: 'outer', line: 1, endLine: 4 };
   const inner = { parent: 'outer', line: 2, endLine: 3 };
-  assert.equal(functionLineCoverage(outer, [outer, inner], new Map([[1, 1], [3, 0], [4, 1]])).coverage, 1);
+  assert.match(functionLineCoverage(outer, [outer, inner], new Map([[1, 1], [3, 0], [4, 1]])).unverified, /use measure/);
   assert.throws(() => coverageByFile('SF:source.js\nDA:bad,1\n', '/project'), /Regenerate LCOV/);
 });
 
@@ -218,11 +214,12 @@ test('coverageCommand uses an empty isolated directory, hashes fixed sources and
   const head = commitBaseline(root);
   const command = `${JSON.stringify(process.execPath)} -e "const fs=require('node:fs');const directory=process.env.QUALITY_GATE_COVERAGE_DIR;if(fs.readdirSync(directory).length)process.exit(8);if(directory!==process.env.QUARTERMASTER_COVERAGE_DIR)process.exit(9);fs.writeFileSync(directory+'/lcov.info','SF:source.js\\nDA:1,1\\nend_of_record\\n');"`;
   const report = await crapReport({ project: root, base: 'HEAD', coverageCommand: command });
-  assert.equal(report.exitCode, 0);
+  assert.equal(report.exitCode, 2);
   const receipt = JSON.parse(await fs.readFile(writeReceipt(report), 'utf8'));
   assert.equal(receipt.head, head);
   assert.equal(receipt.gateVersion, 'crap-1');
-  assert.equal(receipt.verdict, 'passed');
+  assert.equal(receipt.verdict, 'unverified');
+  assert.match(receipt.reasons[0], /executable-line completeness is unverified/);
   assert.equal(receipt.rowCounts.new, 1);
   assert.deepEqual(receipt.files, sourceHashes(root, ['source.js']));
 });
