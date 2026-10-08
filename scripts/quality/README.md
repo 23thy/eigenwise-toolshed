@@ -14,7 +14,7 @@ Only new complexity the change introduced is enforced. Every changed function la
 
 The exit code is 1 only when a NEW or MODIFIED-RAISED row fails or is unverified. Report a LEGACY row with its number; do not rewrite the function to satisfy the gate.
 
-Coverage is V8 block coverage captured through `NODE_V8_COVERAGE` from the suites behind the changed files, projected onto each function's source span:
+Coverage is native V8 precise block coverage. The existing suite runner preloads the shared core through `NODE_OPTIONS` and sets `QUALITY_GATE_V8_CAPTURE` to an empty capture directory. The core records coverage and executed script text through the same inspector session. Child processes inherit both settings when their environment is passed through. Raw `NODE_V8_COVERAGE` reports cannot prove executed bytes and are UNVERIFIED.
 
 | changed path | suite run |
 | --- | --- |
@@ -30,14 +30,16 @@ Coverage is V8 block coverage captured through `NODE_V8_COVERAGE` from the suite
 An UNVERIFIED row in the NEW or MODIFIED-RAISED section fails the gate like a FAIL does (a LEGACY row stays informational either way), and says why:
 
 - **no analyzer**: a changed source in another language (`.cs`, `.py`, `.sh`, `.ps1`, `.svelte`, `.tsx`, `.jsx`) prints one row for the file. The gate has nothing to measure it with; say so in the report rather than claiming a score.
-- **no suite loaded this file**: the file has no coverage record at all, so no suite imported or ran it. Zero coverage from a file that did run is reported as 0% and scored; a file that never ran is a measurement gap, not a score. The usual cause is a script that is only ever spawned as a child process (`spawnSync(process.execPath, ['scripts/thing.js'])`). A child inherits `NODE_V8_COVERAGE` from its parent's environment, so it is covered as soon as the spawning test passes the environment through (`env: process.env`, or `{ ...process.env, ... }`); a test that builds a fresh `env` without it drops the capture. `verify-capture` sets the variable for its own runs the same way.
-- **functions beside it do not line up**: an unnamed callback in a Sidequest `src/*.ts` file whose siblings in the built output do not match the source, so no twin can be trusted.
+- **no suite loaded this file**: no capture contains this file. Zero hits for an exactly owned runtime body is measured zero coverage; an absent record is a measurement gap. A child-process test must pass through `QUALITY_GATE_V8_CAPTURE` and the core preload in `NODE_OPTIONS`.
+- **missing capture binding or executed bytes**: raw historical V8 reports cannot be authenticated by reading today's file. Recapture with the shared core preload into a new empty directory.
+- **executed bytes differ**: the direct source changed, or the transformed output has no authentic matching embedded source map. Sidequest build outputs without maps stay UNVERIFIED.
+- **missing or ambiguous body/range correspondence**: runtime ownership cannot be established exactly. Names, sibling order and nearest-end guesses cannot establish coverage.
 
 ## TypeScript loaded through tsx
 
-Sidequest's tests are `.ts` files run through `tsx`, which hands V8 transpiled text, so raw coverage offsets do not land in the `.ts` source. Node caches tsx's inline source map next to the coverage whenever `NODE_V8_COVERAGE` is set (`source-map-cache` in the report), and the gate maps each range back through it with `node:module`'s `SourceMap`. A map is applied only when its source is the script itself; the Sidequest build ships no map, so `src/*.ts` is paired with its `lib/*.js` output by name and position instead.
+The capture contains the JavaScript bytes tsx actually executed, including its inline compiler source map. Only a single-source embedded map whose `sourcesContent` matches the scored text is supported. Runtime bodies are first identified by exact ranges in the captured executable AST, then mapped by body start and end to one source definition. Every coverage boundary must have supported source correspondence; unmapped ranges stay UNVERIFIED. A mapping delta is accepted only when the intervening generated and original text is byte-identical. Export names and proportional source/output scaling are never used.
 
-A record on the scored file itself is paired by position, never by name: it belongs to the innermost function holding its (remapped) start, and the record ending nearest that function's end wins. V8 names an assigned hook or a property arrow `""` and a constructor after its class, and a remapped start can land past the AST's (esbuild drops a lone parameter's parentheses; tsx's `__name` wrapper leaves a zero-parameter arrow no mapping segment of its own), so a name or an exact start offset would leave a callback that ran at 0%.
+Nested functions own separate coverage intervals. A covered export getter or enclosing callback cannot cover its idle production function or nested callback. A build without a supported map needs a fresh direct-source capture or supported compiler map.
 
 ## Complexity convention
 

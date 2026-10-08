@@ -32,8 +32,9 @@ export async function readOutput(outputPath, coverageScripts, needsFunctions, { 
   }
   return {
     relativePath: path.relative(projectRoot, outputPath).replaceAll('\\', '/'),
+    text,
     descriptors: needsFunctions ? await analyzer.collectFunctions(text, outputPath) : [],
-    records: coverageScripts.get(normalizedPath(outputPath)) ?? [],
+    captures: await Promise.all((coverageScripts.get(normalizedPath(outputPath)) ?? []).map(async (capture) => ({ ...capture, descriptors: typeof capture.text === 'string' ? await analyzer.collectFunctions(capture.text, outputPath + '.js') : [] }))),
   };
 }
 
@@ -41,13 +42,12 @@ export async function measureSource(sourcePath, coverageScripts, { projectRoot, 
   const sourceText = await fs.readFile(sourcePath, 'utf8');
   const descriptors = await analyzer.collectFunctions(sourceText, sourcePath);
   const relativePath = path.relative(projectRoot, sourcePath).replaceAll('\\', '/');
-  const source = { relativePath, descriptors, records: coverageScripts.get(normalizedPath(sourcePath)) ?? [] };
-  // Parsing an output is a TypeScript API round trip, and only unnamed functions need it.
-  const needsFunctions = descriptors.some((descriptor) => descriptor.name === '<anonymous>');
-  const builtOutputs = await Promise.all(outputPaths.filter((outputPath) => outputPath !== sourcePath).map((outputPath) => readOutput(outputPath, coverageScripts, needsFunctions, { projectRoot, analyzer })));
+  const source = await readOutput(sourcePath, coverageScripts, false, { projectRoot, analyzer });
+  source.descriptors = descriptors;
+  const builtOutputs = await Promise.all(outputPaths.filter((outputPath) => outputPath !== sourcePath).map((outputPath) => readOutput(outputPath, coverageScripts, false, { projectRoot, analyzer })));
   const outputs = [source, ...builtOutputs.filter(Boolean)];
-  const loaded = outputs.some((output) => output.records.length);
-  return descriptors.map((descriptor) => {
+  const loaded = outputs.some((output) => output.captures.length);
+  return Promise.all(descriptors.map(async (descriptor) => {
     const metric = {
       identity: descriptor.identity,
       parent: descriptor.parent,
@@ -57,10 +57,10 @@ export async function measureSource(sourcePath, coverageScripts, { projectRoot, 
       complexity: descriptor.complexity,
       relativePath,
     };
-    const { coverage, unverified } = loaded ? functionCoverage(descriptor, outputs) : { unverified: NO_COVERAGE_RECORD };
+    const { coverage, unverified } = loaded ? await functionCoverage(descriptor, outputs, analyzer) : { unverified: NO_COVERAGE_RECORD };
     if (unverified) return { ...metric, unverified };
     return { ...metric, coverage, crap: crapScore(descriptor.complexity, coverage) };
-  });
+  }));
 }
 
 

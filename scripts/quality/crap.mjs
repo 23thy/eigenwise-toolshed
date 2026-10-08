@@ -153,8 +153,9 @@ export async function selectSuites(changedPaths) {
 // node --test refuses to run files while NODE_TEST_CONTEXT says it is already inside a test, so
 // a gate started from a test (its own CLI fixture) must not hand that marker to the suites.
 function spawnSuite(suite, coverageDirectory) {
-  const { NODE_TEST_CONTEXT, ...environment } = process.env;
-  return spawnSync(suite.command, suite.args, { cwd: suite.cwd, env: { ...environment, NODE_V8_COVERAGE: coverageDirectory }, stdio: 'inherit', shell: process.platform === 'win32' });
+  const { NODE_TEST_CONTEXT, NODE_V8_COVERAGE, ...environment } = process.env;
+  const preload = new URL('../../plugins/quality-gate/lib/core.mjs', import.meta.url).href;
+  return spawnSync(suite.command, suite.args, { cwd: suite.cwd, env: { ...environment, QUALITY_GATE_V8_CAPTURE: coverageDirectory, NODE_OPTIONS: `${environment.NODE_OPTIONS || ''} --import=${preload}` }, stdio: 'inherit', shell: process.platform === 'win32' });
 }
 
 async function runSuites(suites, runSuite) {

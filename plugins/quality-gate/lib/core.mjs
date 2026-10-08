@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { Session } from 'node:inspector';
 import path from 'node:path';
 import { SourceMap } from 'node:module';
 import { fileURLToPath as fromFileUrl } from 'node:url';
@@ -74,6 +76,10 @@ export async function createAnalyzer(projectRoot) {
     return ParserApi;
   }
   
+  function runtimeStart(node, text) {
+    return node.getStart() + (text.slice(node.getStart()).match(/^export\s+(?:default\s+)?/)?.[0].length ?? 0);
+  }
+
   async function collectFunctions(text, fileName, { transport } = {}) {
     const virtualFile = /\.(jsx|tsx)$/i.test(fileName) ? '/source' + path.extname(fileName).toLowerCase() : /\.[cm]?js$/.test(fileName) ? '/source.js' : '/source.ts';
     const virtualFileSystem = createVirtualFileSystem({
@@ -97,7 +103,7 @@ export async function createAnalyzer(projectRoot) {
           const identity = `${parentId}/${functionKind(node)}:${name}#${ordinal}`;
           const start = node.getStart();
           const end = node.end;
-          functions.push({ identity, parent: parentId, name, start, end, line: sourceFile.getLineAndCharacterOfPosition(start).line + 1, complexity: cyclomaticComplexity(node), fingerprint: crypto.createHash('sha256').update(ownText(node, text).replace(/\s+/g, ' ')).digest('hex') });
+          functions.push({ identity, parent: parentId, name, start, runtimeStart: runtimeStart(node, text), bodyStart: node.body.getStart(), end, line: sourceFile.getLineAndCharacterOfPosition(start).line + 1, complexity: cyclomaticComplexity(node), fingerprint: crypto.createHash('sha256').update(ownText(node, text).replace(/\s+/g, ' ')).digest('hex') });
           node.forEachChild((child) => visit(child, identity));
         } else node.forEachChild((child) => visit(child, parentId));
       }
@@ -135,17 +141,6 @@ function coverageIntervals(ranges) {
   return intervals;
 }
 
-function projectIntervals(ranges, descriptor) {
-  const primaryRange = ranges[0];
-  const sourceLength = primaryRange.endOffset - primaryRange.startOffset;
-  const targetLength = descriptor.end - descriptor.start;
-  if (sourceLength <= 0 || targetLength <= 0) return [];
-  return coverageIntervals(ranges).map(([start, end]) => [
-    descriptor.start + ((start - primaryRange.startOffset) / sourceLength) * targetLength,
-    descriptor.start + ((end - primaryRange.startOffset) / sourceLength) * targetLength,
-  ]);
-}
-
 function mergeIntervals(intervals) {
   const merged = [];
   for (const [start, end] of intervals.sort((left, right) => left[0] - right[0])) {
@@ -168,10 +163,7 @@ function positionAt(starts, offset) {
   return { line, column: offset - starts[line] };
 }
 
-// tsx hands V8 transpiled text, so raw offsets land in the wrong place in the .ts source.
-// Node caches the inline source map beside the coverage whenever NODE_V8_COVERAGE is set,
-// and node:module decodes it; the delta past the found segment carries a range end through.
-export function originalOffsetMapper(cacheEntry, originalText) {
+export function originalOffsetMapper(cacheEntry, originalText, generatedText) {
   const sourceMap = new SourceMap(cacheEntry.data);
   const generatedStarts = lineStarts(cacheEntry.lineLengths);
   const originalStarts = lineStarts(originalText.split('\n').map((line) => line.length));
@@ -179,88 +171,132 @@ export function originalOffsetMapper(cacheEntry, originalText) {
     const { line, column } = positionAt(generatedStarts, offset);
     const entry = sourceMap.findEntry(line, column);
     if (entry.originalLine === undefined) return null;
-    return originalStarts[entry.originalLine] + entry.originalColumn + (column - entry.generatedColumn);
+    const original = originalStarts[entry.originalLine] + entry.originalColumn;
+    const generated = generatedStarts[entry.generatedLine] + entry.generatedColumn;
+    const delta = offset - generated;
+    if (generatedText.slice(generated, offset) !== originalText.slice(original, original + delta)) return null;
+    return original + delta;
   };
 }
 
 export function remapRecords(records, toOriginal) {
   return records.flatMap((record) => {
     const ranges = record.ranges.map((range) => ({ ...range, startOffset: toOriginal(range.startOffset), endOffset: toOriginal(range.endOffset) }));
-    if (ranges[0].startOffset === null || ranges[0].endOffset === null) return [];
-    return [{ ...record, ranges: ranges.filter((range) => range.startOffset !== null && range.endOffset !== null) }];
+    if (ranges.some((range) => range.startOffset === null || range.endOffset === null)) return [];
+    return [{ ...record, ranges }];
   });
 }
 
-// Only a map whose source is the script itself (tsx transpiling in place) is applied here; the
-// Sidequest build ships no map, and its outputs are paired with src by builtOutput instead.
-async function originalRecords(script, cacheEntry) {
-  const scriptPath = pathFromCoverageUrl(script.url);
-  if (!cacheEntry || pathFromCoverageUrl(cacheEntry.data.sources?.[0]) !== scriptPath) return script.functions;
-  const originalText = cacheEntry.data.sourcesContent?.[0] ?? await fs.readFile(fromFileUrl(script.url), 'utf8');
-  return remapRecords(script.functions, originalOffsetMapper(cacheEntry, originalText));
+function inspectorResult(session, method, parameters = {}) {
+  let response;
+  session.post(method, parameters, (error, result) => {
+    if (error) throw error;
+    response = result;
+  });
+  return response;
 }
 
-async function reportRecordsByScriptPath(report) {
-  const sourceMapCache = report['source-map-cache'] ?? {};
-  return Promise.all((report.result ?? []).map(async (script) => [pathFromCoverageUrl(script.url), await originalRecords(script, sourceMapCache[script.url])]));
+export function startCoverageCapture(directory) {
+  const session = new Session();
+  session.connect();
+  inspectorResult(session, 'Debugger.enable');
+  inspectorResult(session, 'Profiler.enable');
+  inspectorResult(session, 'Profiler.startPreciseCoverage', { callCount: true, detailed: true });
+  const captureId = crypto.randomUUID();
+  process.once('exit', () => {
+    const { result } = inspectorResult(session, 'Profiler.takePreciseCoverage');
+    const scripts = result.filter((script) => pathFromCoverageUrl(script.url)).map((script) => ({ ...script, source: inspectorResult(session, 'Debugger.getScriptSource', { scriptId: script.scriptId }).scriptSource }));
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, `owned-${captureId}.json`), JSON.stringify({ qualityGate: { version: 'v8-owned-1', captureId, pid: process.pid }, result: scripts }));
+    session.disconnect();
+  });
+}
+
+function capturedScript(report, script) {
+  if (report.qualityGate?.version !== 'v8-owned-1' || !report.qualityGate.captureId || !report.qualityGate.pid) return { unverified: 'missing same-session executed-byte capture binding; recapture with the Quality Gate core preload' };
+  if (typeof script.source !== 'string') return { unverified: 'missing executed script bytes in the bound capture' };
+  const records = script.functions.filter((record, index) => index !== 0 || record.ranges[0]?.startOffset !== 0 || record.ranges[0]?.endOffset !== script.source.length);
+  return { text: script.source, records };
 }
 
 export async function readCoverage(coverageDirectory) {
   const reports = await Promise.all((await fs.readdir(coverageDirectory)).filter((file) => file.endsWith('.json')).map(async (file) => JSON.parse(await fs.readFile(path.join(coverageDirectory, file), 'utf8'))));
   const scripts = new Map();
-  for (const [scriptPath, records] of (await Promise.all(reports.map(reportRecordsByScriptPath))).flat()) {
-    if (scriptPath) scripts.set(scriptPath, [...(scripts.get(scriptPath) ?? []), ...records]);
+  const entries = reports.flatMap((report) => (report.result ?? []).map((script) => [pathFromCoverageUrl(script.url), capturedScript(report, script)]));
+  for (const [scriptPath, capture] of entries) {
+    if (scriptPath) scripts.set(scriptPath, [...(scripts.get(scriptPath) ?? []), capture]);
   }
   return scripts;
 }
 
-function namedRecords(descriptor, outputs) {
-  return { records: outputs.flatMap((output) => output.records).filter((record) => record.functionName === descriptor.name && record.ranges[0]) };
-}
-
-function siblingIdentities(descriptors, parent) {
-  return descriptors.filter((descriptor) => descriptor.parent === parent).map((descriptor) => descriptor.identity).join('\n');
-}
-
-// V8 names an inline callback "" and the build ships no source map, so an unnamed function is
-// found by position: its twin in each output has the same identity, trusted only where every
-// function under the same parent lines up, since anything looser pins coverage on a neighbour.
-function anonymousRecords(descriptor, source, builtOutputs) {
-  const sourceSiblings = siblingIdentities(source.descriptors, descriptor.parent);
-  const records = [];
-  for (const output of builtOutputs.filter((candidate) => siblingIdentities(candidate.descriptors, descriptor.parent))) {
-    const outputSiblings = siblingIdentities(output.descriptors, descriptor.parent);
-    if (outputSiblings !== sourceSiblings) return { unverified: `the functions beside it in ${output.relativePath} do not line up with the source, so its coverage cannot be paired` };
-    const twin = output.descriptors.find((candidate) => candidate.identity === descriptor.identity);
-    records.push(...output.records.filter((record) => record.ranges[0]?.startOffset === twin.start));
+function embeddedSourceMap(text) {
+  const encoded = text.match(/\/\/# sourceMappingURL=data:application\/json(?:;charset=utf-8)?;base64,([^\s]+)/);
+  if (!encoded) return null;
+  try {
+    return JSON.parse(Buffer.from(encoded[1], 'base64').toString('utf8'));
+  } catch {
+    return null;
   }
-  return { records };
 }
 
-// A record on the source itself carries source offsets, so it is paired by position: V8 names
-// most callbacks "" and a constructor after its class. A remapped start can still land past the
-// AST's (esbuild drops a lone parameter's parentheses; tsx's __name wrapper leaves a zero-parameter
-// arrow no segment of its own), so a record belongs to the innermost function holding its start,
-// and the end, which maps cleanly, picks the function's own record over a nested class initializer.
-function ownRecords(descriptor, source) {
-  const nested = source.descriptors.filter((candidate) => candidate.parent === descriptor.identity);
-  const holds = (span, offset) => span.start <= offset && offset < span.end;
-  const startsHere = ({ ranges: [range] }) => holds(descriptor, range.startOffset) && !nested.some((child) => holds(child, range.startOffset));
-  const startedHere = source.records.filter(startsHere);
-  const endDistance = ({ ranges: [range] }) => Math.abs(range.endOffset - descriptor.end);
-  const nearest = Math.min(...startedHere.map(endDistance));
-  return startedHere.filter((record) => endDistance(record) === nearest);
+function mappedSource(capture, source) {
+  if (capture.text === source.text) return (offset) => offset;
+  const data = embeddedSourceMap(capture.text);
+  if (!data || data.sourcesContent?.length !== 1 || data.sourcesContent[0] !== source.text) return null;
+  return originalOffsetMapper({ data, lineLengths: capture.text.split('\n').map((line) => line.length) }, source.text, capture.text);
 }
 
-// outputs[0] is the source itself; the rest are its build outputs.
+function runtimeBodyRecords(descriptor, source, capture) {
+  if (capture.unverified) return capture;
+  const toOriginal = mappedSource(capture, source);
+  if (!toOriginal) return { unverified: `executed bytes differ from ${source.relativePath}; an authentic matching source map is required` };
+  const twins = capture.descriptors.filter((candidate) => toOriginal(candidate.bodyStart) === descriptor.bodyStart && toOriginal(candidate.end) === descriptor.end);
+  if (twins.length !== 1) return { unverified: 'missing or ambiguous source-map correspondence for the owned runtime body' };
+  const twin = twins[0];
+  const records = capture.records.filter((record) => record.ranges[0]?.startOffset === twin.runtimeStart && record.ranges[0]?.endOffset === twin.end);
+  if (records.length !== 1) return { unverified: 'missing or ambiguous exact runtime range for the owned function body' };
+  return { records, toOriginal };
+}
+
+function outputCoverage(descriptor, source, output) {
+  const intervals = [];
+  for (const capture of output.captures) {
+    const owned = runtimeBodyRecords(descriptor, source, capture);
+    if (owned.unverified) return owned;
+    const mapped = remapRecords(owned.records, owned.toOriginal);
+    if (!mapped.length) return { unverified: 'a runtime coverage boundary has no exact source-map correspondence' };
+    intervals.push(...coverageIntervals(mapped[0].ranges));
+  }
+  return { intervals };
+}
+
+function ownBodyIntervals(descriptor, descriptors) {
+  const nested = descriptors.filter((candidate) => candidate.parent === descriptor.identity);
+  const intervals = [];
+  let start = descriptor.bodyStart;
+  for (const child of nested) {
+    intervals.push([start, child.start]);
+    start = child.end;
+  }
+  intervals.push([start, descriptor.end]);
+  return intervals;
+}
+
 export function functionCoverage(descriptor, outputs) {
-  const [source, ...builtOutputs] = outputs;
-  const paired = descriptor.name === '<anonymous>' ? anonymousRecords(descriptor, source, builtOutputs) : namedRecords(descriptor, builtOutputs);
-  if (paired.unverified) return paired;
-  const intervals = [...ownRecords(descriptor, source), ...paired.records].flatMap((record) => projectIntervals(record.ranges, descriptor));
-  const coveredLength = mergeIntervals(intervals).reduce((total, [start, end]) => total + end - start, 0);
-  return { coverage: Math.min(1, coveredLength / (descriptor.end - descriptor.start)) };
+  const [source] = outputs;
+  if (outputs.some((output) => !output.captures)) return { unverified: 'missing executed-byte capture binding for the owned function body' };
+  const measured = outputs.filter((output) => output.captures.length).map((output) => outputCoverage(descriptor, source, output));
+  if (!measured.length) return { unverified: 'no executed-byte capture for the owned function body' };
+  const unverified = measured.find((result) => result.unverified);
+  if (unverified) return unverified;
+  const covered = mergeIntervals(measured.flatMap((result) => result.intervals));
+  const owned = ownBodyIntervals(descriptor, source.descriptors);
+  const total = owned.reduce((length, [start, end]) => length + end - start, 0);
+  const coveredLength = owned.reduce((length, [start, end]) => length + covered.reduce((sum, [left, right]) => sum + Math.max(0, Math.min(end, right) - Math.max(start, left)), 0), 0);
+  return { coverage: coveredLength / total };
 }
+
+if (process.env.QUALITY_GATE_V8_CAPTURE) startCoverageCapture(process.env.QUALITY_GATE_V8_CAPTURE);
 
 function siblingsBetweenAnchors(siblings, anchors) {
   let segment = 0;
