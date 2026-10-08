@@ -460,4 +460,42 @@ test('orchestrators hold missing measurement only for a configured gate', () => 
   }
 });
 
+
+test('environment-bound capture guidance stays identical in the template and every generated executor', () => {
+  const clause = "Run the ticket's exact verifier on that clean committed candidate once for final capture unless the briefing marks it environment-bound";
+  assert.ok(executorTemplate.includes(clause));
+  const executors: Map<string, string> = agentsync.bundledExecutorSources();
+  assert.ok(executors.size > 0);
+  for (const [filename, source] of executors) {
+    if (filename.startsWith('sidequest-exec-')) assert.ok(source.includes(clause), filename);
+    assert.strictEqual(fs.readFileSync(path.join(ROOT, 'agents', filename), 'utf8'), source, filename);
+  }
+});
+
+test('environment-lane references agree on the delivery gate, background CLI and one-bounce boundary', () => {
+  for (const source of [publishing, orchestration, invocationContracts]) {
+    assert.match(source, /delivery gate/);
+    assert.match(source, /run_in_background/);
+    assert.match(source, /environment_lane_requires_cli/);
+    assert.match(source, /merge` or `replay/);
+    assert.match(source, /apply` leaves the target dirty/);
+    assert.match(source, /environment_lane_second_failure/);
+    assert.match(source, /[Rr]eview-bound/);
+    assert.match(source, /groomClose/);
+    assert.match(source, /deliveryCommit/);
+  }
+});
+
+test('Docker/browser setup keeps the shared environment explicit and per-worktree provisioning opt-in', () => {
+  const gettingStarted = fs.readFileSync(path.join(ROOT, '..', '..', 'docs', 'src', 'content', 'docs', 'getting-started', 'sidequest.md'), 'utf8');
+  assert.match(gettingStarted, /worktreeIsolation: true/);
+  assert.match(gettingStarted, /verifyEnvironment: shared/);
+  assert.match(gettingStarted, /delivery: merge/);
+  assert.match(gettingStarted, /integrationBranch` equal to the branch checked out/);
+  assert.match(gettingStarted, /integrationVerifyTimeoutMs` at least as long as the measured gate duration/);
+  assert.match(gettingStarted, /pinned gate must include any app rebuild.restart/);
+  assert.match(gettingStarted, /per-worktree environment is a separate project opt-in through `worktreeSetup/);
+  assert.match(gettingStarted, /verifyEnvironment: isolated/);
+});
+
 export {};

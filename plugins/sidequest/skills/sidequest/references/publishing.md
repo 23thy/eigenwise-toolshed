@@ -49,13 +49,15 @@ The orchestrator is the integrator. A submitted range stays pinned at `refs/side
 its exact assembled wave has delivered. A singleton can be assembled and gated during `integrate`; for
 a group, first run `sidequest assemble-wave <SQ-n> [SQ-n...] --verify "<gate evidence>"`, then pass
 that exact same participant set to `sidequest integrate`. When the participants pin a command, the gate
-runs it itself (`--verify` is only read for other verifier kinds): in a temporary detached checkout of
+runs it itself (`--verify` is only read for other verifier kinds), unless its requirement pins
+`environment: shared`: that assembled gate records `gate_deferred`, with no checkout or verifier run.
+An isolated requirement runs in a temporary detached checkout of
 the wave baseline with every candidate merged, cwd at its root, `CLAUDE_PLUGIN_*` stripped from the
 environment, and `verification.verifiedTree` naming the tree it checked. Candidates that do not merge
 cleanly refuse with `assembled_wave_compose_failed` and reject nobody. The engine refuses delivery when the group
-has no passing assembled-wave gate, includes a participant from another wave, omits a participant, or
-tries to deliver one participant from a multi-ticket wave. It records delivery only after one passing
-wave delivers its exact Git participant set and the resulting revision passes its delivery verification.
+has neither a passing assembled-wave gate nor an environment-bound `gate_deferred`, includes a participant from another wave, omits a participant, or
+tries to deliver one participant from a multi-ticket wave. It records delivery only after the gated
+wave (including an environment-bound deferred wave) delivers its exact Git participant set and the resulting revision passes its delivery verification.
 `integrate <ref> --by <who> --mode <merge|replay|apply>` performs that delivery and closes every
 participant only after the record exists. It validates each submitted range and admitted scope again,
 names stray paths, and never deletes a pinned ref.
@@ -364,13 +366,35 @@ the ticket.
     failed, retain the refs or executor worktrees needed for recovery, record the failure on the done
     ticket, and still release the publish lock.
 
+## Environment-bound delivery
+
+The environment lane is integrate's delivery gate. An isolated dispatch pinned to
+`environment: shared` runs focused checks without the environment, commits and submits. Submit records
+`deferred`; executor capture and assembled-wave verification do not run that command. The orchestrator
+runs CLI `integrate <ref> --project <path> --json` through Bash `run_in_background` and acts on its
+completion notification while continuing independent work. MCP refuses `environment_lane_requires_cli`
+because running the environment gate inside the board server stalls executor board calls.
+
+The lane merges the pinned candidate onto the current shared-checkout tip and verifies that merged tree
+under the delivery lock. Delivery must be `merge` or `replay`: `apply` leaves the target dirty, so
+the next item refuses `integration_target_dirty`. `delivery_in_progress` names the holder, commit,
+start time and log; retry after its run finishes. Multi-ref CLI integrate can batch candidates in one
+all-or-nothing gate. `groomClose` with `deliveryCommit` also runs delivery verification in the registered
+checkout, so that closure is a lane run.
+
+A post-merge verify failure or `--no-ff` merge conflict rolls back and bounces an unbound candidate
+through rework once. The next briefing carries Pending rework with the command, log, failures and tail
+(or conflict evidence). Only the orchestrator dispatches again; nothing spawns automatically. A second
+lane failure stays parked with `environment_lane_second_failure` naming both logs. Review-bound
+candidates never auto-rework.
+
 ## Integration failures fail closed
 
 A submission that conflicts or fails post-integration reverify before local delivery closure is never
 force-merged and never silently dropped. A full gate, review, version, or push failure after local delivery
 is recorded against the already-done ticket; it must not be described as remotely reachable:
 
-- Before local delivery closure, leave its submission parked (do NOT `done`, do NOT clear it reflexively).
+- Before local delivery closure, an environment-bound unbound candidate follows the one-bounce rule above. Otherwise leave its submission parked (do NOT `done`, do NOT clear it reflexively).
 - File a narrowly scoped integration ticket for a local delivery conflict or verification failure: the
   conflicting ref, the exact failure output, the submitted commit + durable ref, and what the integrator
   may touch. Link it `blocks` the original.

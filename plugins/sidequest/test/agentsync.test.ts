@@ -1719,4 +1719,33 @@ test('executor briefings render complete deterministic sections', () => {
   assert.notEqual(first, revised, 'a revised snapshot must produce a revised briefing');
 });
 
+
+for (const kind of ['command', 'suite']) {
+  test(`environment-bound ${kind} briefings defer the pinned verifier until delivery`, () => {
+    const briefing = agentsync.renderTicketBriefing({
+      ref: 'SQ-ENVIRONMENT', model: 'sonnet', effort: 'medium', category: {},
+      executorVerify: 'npm run environment-gate', executorVerifyKind: kind,
+      dispatch: { sharedTree: false, verificationRequirement: {
+        kind, command: 'npm run environment-gate', evidenceContract: 'environment gate', environment: 'shared',
+      } },
+    }, 'environment-token');
+    assert.ok(briefing.includes("Pinned verifier is environment-bound: do not run it here. After you submit, the orchestrator's lane runs it in the shared checkout against your merged commit. A failure comes back as Pending rework with the log."));
+    assert.match(briefing, /Command: npm run environment-gate/);
+    assert.doesNotMatch(briefing, /^Run it through /m);
+    assert.doesNotMatch(briefing, /verify-capture\.js/);
+  });
+}
+
+test('isolated pinned requirements retain capture guidance despite ambient shared-environment config', () => {
+  const briefing = agentsync.renderTicketBriefing({
+    ref: 'SQ-ISOLATED', model: 'sonnet', effort: 'medium', category: {},
+    verifyEnvironment: 'shared',
+    dispatch: { sharedTree: false, verificationRequirement: {
+      kind: 'command', command: 'npm run isolated-check', evidenceContract: 'isolated check',
+    } },
+  }, 'isolated-token');
+  assert.match(briefing, /^Run it through node .*verify-capture\.js/m);
+  assert.doesNotMatch(briefing, /Pinned verifier is environment-bound/);
+});
+
 export {};
