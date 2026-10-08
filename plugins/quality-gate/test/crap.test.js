@@ -259,13 +259,13 @@ test('CLI writes unverified receipts and preserves actionable help and exit code
   assert.equal(cli(root, ['--base', 'unknown', '--cc-only']).status, 2);
 });
 
-test('Python adapter placeholder is informational-unverified and never a gate stop', async (context) => {
+test('Python real-source adapter scores production bodies without radon', async (context) => {
   const root = await fixture(context, { 'source.py': 'def subject():\n    return 1\n' });
   const report = await crapReport({ project: root, ccOnly: true });
   assert.equal(report.exitCode, 0);
-  assert.equal(report.verdict, 'unverified');
-  assert.equal(report.unverified[0].unverified, 'Python adapter not installed in this version');
-  assert.equal(report.unverified[0].complexity, null);
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.changedMetrics[0].adapterVersion, 'python-ast-1');
+  assert.equal(report.changedMetrics[0].complexity, 1);
 });
 
 test('PHP and Vue keep lizard counts and unbound rows remain informational', async (context) => {

@@ -94,8 +94,17 @@ export function coverageTrust(input, file, hash) {
 }
 
 export function functionLineCoverage(descriptor, descriptors, lines) {
+  if (descriptor.ownedLines) return pythonLineCoverage(descriptor, descriptors, lines);
   const nested = descriptors.filter((candidate) => candidate.parent === descriptor.identity);
   const executable = [...lines.entries()].filter(([line]) => line >= descriptor.line && line <= descriptor.endLine && !nested.some((child) => line > child.line && line <= child.endLine));
   if (!executable.length) return { unverified: 'No executable LCOV lines in this function. Run coverage that includes this body, then rerun the gate.' };
   return { coverage: executable.filter(([, hits]) => hits > 0).length / executable.length };
+}
+
+function pythonLineCoverage(descriptor, descriptors, lines) {
+  const shared = descriptors.some((candidate) => candidate.identity !== descriptor.identity && candidate.ownedLines?.some((line) => descriptor.ownedLines.includes(line)));
+  if (shared) return { unverified: 'Independently owned Python bodies share executable source lines. Put their bodies on separate lines to measure per-function LCOV coverage.' };
+  const executable = descriptor.ownedLines.filter((line) => lines.has(line));
+  if (!executable.length) return { unverified: 'No executable LCOV lines in this function. Run coverage that includes this body, then rerun the gate.' };
+  return { coverage: executable.filter((line) => lines.get(line) > 0).length / executable.length };
 }

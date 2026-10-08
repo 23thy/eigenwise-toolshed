@@ -11,7 +11,7 @@ node plugins/quality-gate/bin/quality-gate.js crap --project <root> --base <revi
 
 The named project is the tree measured, including a linked worktree. Configure `.claude/quality-gate/crap.json` there with `sources`, `exclude`, `base`, `coverageCommand` and `lcov`. The old `.claude/quartermaster/crap.json` still works with a migration notice.
 
-JavaScript and TypeScript use the TypeScript AST, including JSX and TSX. Types produce no runtime functions. PHP and Vue script sections keep lizard; rows it cannot bind are informational-unverified. Python is informational-unverified until its source adapter ships.
+JavaScript and TypeScript use the TypeScript AST, including JSX and TSX. Types produce no runtime functions. PHP and Vue script sections keep lizard; rows it cannot bind are informational-unverified. Python uses the versioned stdlib source adapter (python3 or Windows py -3), with independently owned nested methods, closures and callbacks. Each row names its adapter version and source-qualified oracle, fixture/setup or production classification. Only qualified oracle bodies drop the assert-statement surcharge; decisions inside predicates and messages still count. Generate Python LCOV with coverage.py. Bodies sharing an executable source line stay unverified because line coverage cannot separate them.
 
 The gate enforces CRAP strictly below 6 for new functions and functions whose complexity rose against the base. Touched legacy functions with equal or lower complexity are informational. `--cc-only` checks the complexity floor without coverage. A function at complexity 6 fails at any coverage, so more tests cannot make it pass. An empty scoring scope says `nothing to score` and gives the reason.
 
