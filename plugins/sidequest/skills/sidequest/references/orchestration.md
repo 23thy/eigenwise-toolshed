@@ -14,7 +14,7 @@ the host still apply; gate absence alone never holds, parks or marks work UNVERI
 
 - [Improvement authority](#improvement-authority) and [decomposition](#decomposition-in-depth)
 - [Inline-safe work](#inline-safe-direct-work) and [acceptance/advice](#acceptance-evidence-and-audit-gates)
-- [Fan-out](#fan-out-mechanics), [resources](#shared-resource-handoff) and [worktree bases](#worktree-base-selection)
+- [Fan-out](#fan-out-mechanics), [environment lane](#environment-lane), [resources](#shared-resource-handoff) and [worktree bases](#worktree-base-selection)
 - [Bookend supervision and immutable review](#bookend-supervision)
 - [Checkpoints](#natural-orchestrator-checkpoints), [touch budget](#small-ticket-touch-budget) and [lead load](#orchestration-load-keep-the-lead-responsive)
 - [Research](#discovery-and-research) and [agent teams](#agent-teams-claude_code_experimental_agent_teams)
@@ -346,6 +346,24 @@ atomic: each subagent claims a different ticket, and any race just sends the los
 
 - Parallelism costs tokens and orchestration overhead — a couple of parallel investigations or an
   executor wave where sizes justify it, not a swarm for everything.
+
+## Environment lane
+
+For an isolated dispatch pinned to `environment: shared`, the executor runs focused checks that need
+no environment, commits and submits without running its pinned verifier. Submit and the assembled-wave
+gate record deferred verification; they do not claim it passed. The lane is integrate's delivery gate
+in the shared checkout against the merged tree, under its existing delivery lock.
+
+Run CLI `integrate <ref> --project <path> --json` with Bash `run_in_background` and act on its completion
+notification. Continue independent dispatch and source work while it runs. MCP refuses
+`environment_lane_requires_cli`; another delivery gets `delivery_in_progress` with the holder and log.
+Use delivery `merge` or `replay`. `apply` leaves the target dirty and blocks the next lane item.
+`groomClose` with `deliveryCommit` is also a lane run in the registered checkout.
+
+A post-merge verify failure or `--no-ff` merge conflict rolls back and returns an unbound candidate to
+`todo` once, with Pending rework and its log or conflict evidence in the next briefing. Only the
+orchestrator dispatches again. A second lane failure parks with `environment_lane_second_failure`;
+a review-bound candidate never auto-reworks. See `publishing.md` for delivery and recovery.
 
 ## Shared-resource handoff
 

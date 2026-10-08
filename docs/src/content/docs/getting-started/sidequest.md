@@ -47,13 +47,19 @@ Once this save-and-read check works, use the story workflow below when the task 
 5. When a ticket is ready, ask Claude to integrate it if its checks pass. Independent review is required only for a contract-named seam the check cannot exercise or a required high-stakes review. Multiple review lenses need distinct named risks; wave count alone adds no review.
 
 Each ticket carries a focused check that decides whether its work is ready. Claude records that check against
-the final clean committed candidate once and reports what passed, failed, or needs your decision.
+the final clean committed candidate once and reports what passed, failed, or needs your decision,
+unless the dispatch pins a shared environment: then it submits deferred evidence for delivery.
 Delivery still runs its real pinned verifier. After delivery, Claude runs one combined full merged-tree
 gate per wave before versioning, including a singleton. A changed tree after rebase needs a fresh gate.
 Assembled-tree proof is reused only when Sidequest's runtime authorizes its exact identities. The agent-facing reference covers capture, evidence, and
 delivery mechanics.
 
-A verifier pinned to a shared environment (`verifyEnvironment: shared`) delivers through CLI `sidequest integrate`, which
+A verifier pinned to a shared environment (`verifyEnvironment: shared`) skips executor capture and the
+assembled-wave gate. Its environment lane is integrate's delivery gate in the shared checkout, against
+the merged tree. Claude runs CLI `sidequest integrate <ref> --project <path> --json` through background
+Bash (`run_in_background`) and acts on its completion notification; MCP refuses `environment_lane_requires_cli`.
+Delivery must be `merge` or `replay`: `apply` leaves the checkout dirty and blocks the next lane item.
+A `groomClose` closure with `deliveryCommit` is also a lane run. CLI integrate
 runs it under an owned process tree: at the deadline the whole tree ends and the delivery rolls back with exit
 124. On POSIX that tree is the verifier's process group, so anything it starts with `setsid` (or another new
 session or group) escapes the deadline and needs its own teardown in the verify command. On Windows the
@@ -285,6 +291,31 @@ A fresh worktree only has what git checks out. Anything gitignored, like `node_m
 The wave gate applies the same entries to the checkout it verifies in, except a copy there never overwrites a file the candidates carry.
 
 Some build tools refuse a linked `node_modules`. Next.js 16 builds with Turbopack by default, and Turbopack stops with `Symlink [project]/node_modules is invalid, it points out of the filesystem root` because the link leads outside the worktree. Use `{ "path": "node_modules", "mode": "copy" }` for those projects. On macOS the copy is an APFS clone (`cp -c`), so it takes seconds and shares disk blocks with your checkout; elsewhere, or on a volume that can't clone, it's a plain copy. Links inside the copied directory keep their relative targets, so they still resolve inside the worktree. The sweep counts the copy, links included, as install content and deletes it with the worktree instead of quarantining it.
+
+### A Docker/browser project with one shared environment
+
+For a project such as Contractify, keep implementation isolated and run its Docker/browser gate in
+the checkout the app actually serves. Ask Claude to configure the board with:
+
+- `worktreeIsolation: true`
+- `verifyEnvironment: shared`
+- `delivery: merge`
+- `integrationBranch` equal to the branch checked out in that shared checkout
+- `integrationVerifyTimeoutMs` at least as long as the measured gate duration
+
+The pinned gate must include any app rebuild/restart needed to serve the merged code and container
+teardown. Confirm the served checkout and branch, measure the gate time, and check that the app does
+not write tracked files. A broker such as dockerd is outside the owned client process tree.
+
+Executors use their own worktrees, run environment-free focused checks, commit and submit deferred
+evidence. Claude backgrounds CLI integrate, which merges onto the current tip and runs the gate under
+the delivery lock. The next lane item waits for that run to finish. A failure rolls back and returns
+the ticket for rework once; Claude decides when to dispatch it again.
+
+A per-worktree environment is a separate project opt-in through `worktreeSetup`: keep
+`verifyEnvironment: isolated`, provision each worktree's environment there, and make its verifier use
+that worktree's ports, database and volumes. It costs concurrent Docker/browser resources, so choose
+it only when the project can afford that load. Sidequest does not create those environments by default.
 
 ### Reaping services an executor started
 
