@@ -1748,4 +1748,21 @@ test('isolated pinned requirements retain capture guidance despite ambient share
   assert.doesNotMatch(briefing, /Pinned verifier is environment-bound/);
 });
 
+
+for (const { label, artifact, legacyArtifact, expectedArtifact } of [
+  { label: 'pinned', artifact: 'pinned receipt', legacyArtifact: 'legacy receipt', expectedArtifact: 'pinned receipt' },
+  { label: 'legacy fallback', artifact: undefined, legacyArtifact: 'legacy receipt', expectedArtifact: 'legacy receipt' },
+  { label: 'default', artifact: undefined, legacyArtifact: undefined, expectedArtifact: 'the declared artifact' },
+]) {
+  test(`attestation briefing preserves the ${label} artifact description`, () => {
+    const briefing = agentsync.renderTicketBriefing({
+      ref: 'SQ-ATTESTATION', model: 'sonnet', effort: 'medium', category: {},
+      executorAttestationArtifact: legacyArtifact,
+      dispatch: { verificationRequirement: { kind: 'attestation', evidenceContract: 'observed evidence', artifact } },
+    }, 'attestation-token');
+    assert.ok(briefing.includes(`Pinned verifier: attestation. Record actual evidence for ${expectedArtifact}.`));
+    assert.doesNotMatch(briefing, /^Run it through /m);
+  });
+}
+
 export {};
