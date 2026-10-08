@@ -38,7 +38,7 @@ A body starts at 1. Add one for each `if`, conditional expression, `for`/`async 
 
 Test filename patterns qualify test functions and Test* methods; source-resolved `unittest.TestCase` bases also qualify methods outside those filenames. Import aliases for `pytest.fixture` and `unittest.TestCase` are recognized. Setup/teardown names in test modules or TestCase methods and every conftest body remain fixture/setup, retaining their assert surcharge. A Session class nested inside a test function gets production methods, not inherited oracle status.
 
-LCOV is joined only to each Python body's owned AST lines, excluding nested bodies. Independently owned bodies on the same executable source line are unverified because line coverage cannot separate them. Put those bodies on separate lines for per-function proof. No executable records is also unverified, never assumed covered. Python uses the same hash proof, strict threshold and base ratchet as JS/TS.
+Python compiles the exact parsed source with optimization disabled to inventory executable bytecode lines, then attributes that inventory to each body's owned AST lines, excluding nested bodies. Every inventoried line needs an explicit DA record. Independently owned bodies on the same executable source line are unverified because line coverage cannot separate them. Put those bodies on separate lines for per-function proof. Missing records, excluded statements and ambiguous multiline normalization are unverified, never guessed zero or full coverage. An explicit zero-hit DA record is measured zero. Docstrings and optimized-away statements that produce no bytecode lines do not enter the denominator; an empty inventory remains unverified. Python keeps the same hash proof, strict threshold and base ratchet.
 
 Use locally installed `coverage.py` (for example `pipx install coverage`) to generate LCOV with `coverage run script.py` then `coverage lcov -o <path>`. A coverageCommand can write its data file and LCOV into `QUALITY_GATE_COVERAGE_DIR`. The live regression skips with an explicit UNVERIFIED reason when coverage.py is absent; the adapter itself needs only Python.
 
@@ -52,7 +52,7 @@ For pre-existing LCOV, supply a sibling `<lcov>.sources.json` containing SHA-256
 { "src/example.ts": "<sha256 of the scored source bytes at coverage capture>" }
 ```
 
-A missing or differing hash makes coverage unverified. Generating hashes later against arbitrary old coverage does not establish provenance. LCOV line records are joined to AST spans, excluding independently owned nested body lines. Zero hits is measured zero coverage; missing executable lines are unverified.
+A missing or differing hash makes coverage unverified. Generating hashes later against arbitrary old coverage does not establish provenance. Source hashes prove byte identity, not executable-line completeness or coverage exclusions. Python requires its exact-source bytecode inventory and complete DA records. JS/TS and other LCOV adapters without a supported independent executable-line inventory return UNVERIFIED even when all supplied hits are positive or zero. For supported JS/TS bodies, use the existing `measure` entry with genuine same-session V8 capture.
 
 Vitest projects need their own coverage provider's LCOV output, for example through an installed matching `@vitest/coverage-v8`. Raw `NODE_V8_COVERAGE` from vite-node can contain only `evalmachine.<anonymous>` entries, which cannot identify scored sources. Missing coverage stays unverified, with the reason and complexity shown.
 

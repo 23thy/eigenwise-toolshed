@@ -80,7 +80,7 @@ test('Python fixture/setup markers and source-qualified test classes have explic
 test('Python per-body coverage excludes nested declarations and refuses shared-line callbacks', () => {
   const outer = byName.get('test_nested.Session.call_tool');
   const inner = byName.get('test_nested.Session.call_tool.completed');
-  const lines = new Map([[outer.endLine, 1], [inner.endLine, 0]]);
+  const lines = new Map([...outer.executableLines.map((line) => [line, 1]), ...inner.executableLines.map((line) => [line, 0])]);
   assert.equal(functionLineCoverage(outer, rows, lines).coverage, 1);
   assert.equal(functionLineCoverage(inner, rows, lines).coverage, 0);
   assert.match(functionLineCoverage(byName.get('callback_consumer.<lambda>'), rows, lines).unverified, /share executable source lines/);
@@ -123,18 +123,25 @@ test('Python fresh coverageCommand rejects source mutation around the capture', 
   await assert.rejects(crapReport({ project: root, coverageCommand: command }), /Scored source changed during coverageCommand/);
 });
 
-test('Python live coverage.py LCOV scores the actual fixture with fresh same-byte proof', async (context) => {
-  const available = spawnSync('coverage', ['--version'], { encoding: 'utf8', timeout: 10000 });
-  if (available.status !== 0) return context.skip('UNVERIFIED: local coverage.py is unavailable; install coverage with pipx for the live probe.');
-  const root = await project(context, 'def subject(value):\n    return value if value else 0\n\nsubject(1)\nsubject(0)\n');
-  const capture = path.join(root, 'capture.cjs');
-  await fs.writeFile(capture, `const fs = require('node:fs'); const {spawnSync} = require('node:child_process'); const directory = process.env.QUALITY_GATE_COVERAGE_DIR; if(fs.readdirSync(directory).length) process.exit(8); const environment = {...process.env, COVERAGE_FILE: directory+'/.coverage'}; for(const argumentsList of [['run','subject.py'], ['lcov','-o', directory+'/lcov.info']]) { const result=spawnSync('coverage',argumentsList,{env:environment,encoding:'utf8'}); if(result.status!==0) {process.stderr.write(result.stderr); process.exit(result.status || 1);} }`);
-  const report = await crapReport({ project: root, coverageCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(capture)}` });
-  assert.equal(report.exitCode, 0);
-  assert.equal(report.changedMetrics[0].coverage, 1);
-  assert.equal(report.changedMetrics[0].complexity, 2);
-  assert.equal(report.unverified.length, 0);
-});
+for (const [label, text, expectedExitCode, expectedCoverage, reason] of [
+  ['complete', 'def subject(value):\n    first = value\n    return first if first else 0\n\nsubject(1)\nsubject(0)\n', 0, 1],
+  ['explicit zero for an uncalled body', 'def subject(value):\n    first = value\n    return first if first else 0\n', 1, 0],
+  ['excluded statement', 'def subject(value):\n    first = value\n    return first if first else 0  # pragma: no cover\n\nsubject(1)\n', 2, undefined, /Missing executable LCOV lines/],
+  ['ambiguous multiline normalization', 'def subject(value):\n    return (\n        value\n    )\n\nsubject(1)\n', 2, undefined, /Missing executable LCOV lines/],
+]) {
+  test('Python live coverage.py executable inventory: ' + label, async (context) => {
+    const available = spawnSync('coverage', ['--version'], { encoding: 'utf8', timeout: 10000 });
+    if (available.status !== 0) return context.skip('UNVERIFIED: local coverage.py is unavailable; install coverage with pipx for the live probe.');
+    const root = await project(context, text);
+    const capture = path.join(root, 'capture.cjs');
+    await fs.writeFile(capture, `const fs = require('node:fs'); const {spawnSync} = require('node:child_process'); const directory = process.env.QUALITY_GATE_COVERAGE_DIR; if(fs.readdirSync(directory).length) process.exit(8); const environment = {...process.env, COVERAGE_FILE: directory+'/.coverage'}; for(const argumentsList of [['run','subject.py'], ['lcov','-o', directory+'/lcov.info']]) { const result=spawnSync('coverage',argumentsList,{env:environment,encoding:'utf8'}); if(result.status!==0) {process.stderr.write(result.stderr); process.exit(result.status || 1);} }`);
+    const report = await crapReport({ project: root, coverageCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(capture)}` });
+    assert.equal(report.exitCode, expectedExitCode);
+    assert.equal(report.changedMetrics[0].coverage, expectedCoverage);
+    assert.equal(report.unverified.length, Number(expectedCoverage === undefined));
+    if (reason) assert.match(report.unverified[0].unverified, reason);
+  });
+}
 
 test('Python runtime and syntax failures are actionable prerequisites', () => {
   assert.throws(() => pythonDescriptors('def broken(:', 'broken.py', pluginRoot), /Python source adapter failed.*broken.py/s);
@@ -168,4 +175,41 @@ test('Python header changes keep function identity while changing its fingerprin
   const after = pythonDescriptors('@decorator\ndef subject(value=0):\n    return value\n', 'source.py', pluginRoot);
   assert.equal(before[0].identity, after[0].identity);
   assert.notEqual(before[0].fingerprint, after[0].fingerprint);
+});
+
+test('Python incomplete executable-line records stay unverified', () => {
+  const descriptors = pythonDescriptors('def subject():\n    first = 1\n    return first\n', 'subject.py', pluginRoot);
+  const measured = functionLineCoverage(descriptors[0], descriptors, new Map([[2, 1]]));
+  assert.match(measured.unverified, /Missing executable LCOV lines/);
+  assert.equal(measured.coverage, undefined);
+});
+
+for (const [label, records, expected] of [
+  ['complete hit records', [[2, 1], [3, 1]], 1],
+  ['explicit measured zero', [[2, 0], [3, 0]], 0],
+  ['one explicit measured zero', [[2, 1], [3, 0]], 0.5],
+]) {
+  test('Python executable inventory: ' + label, () => {
+    const descriptors = pythonDescriptors('def subject():\n    first = 1\n    return first\n', 'subject.py', pluginRoot);
+    assert.deepEqual(descriptors[0].executableLines, [2, 3]);
+    assert.equal(functionLineCoverage(descriptors[0], descriptors, new Map(records)).coverage, expected);
+  });
+}
+
+test('Python optimized-away statements are absent from native executable inventory', () => {
+  const descriptors = pythonDescriptors('def subject():\n    \"unused docstring\"\n    first = 1\n    return first\n', 'subject.py', pluginRoot);
+  assert.deepEqual(descriptors[0].executableLines, [3, 4]);
+  assert.equal(functionLineCoverage(descriptors[0], descriptors, new Map([[3, 1], [4, 1]])).coverage, 1);
+});
+
+test('Python old descriptors without native inventory stay unverified', () => {
+  const [descriptor] = pythonDescriptors('def subject():\n    return 1\n', 'subject.py', pluginRoot);
+  const { executableLines, ...oldDescriptor } = descriptor;
+  assert.match(functionLineCoverage(oldDescriptor, [oldDescriptor], new Map([[2, 1]])).unverified, /inventory is missing/);
+});
+
+test('Python bodies without native executable lines stay unverified', () => {
+  const descriptors = pythonDescriptors('def subject():\n    "docstring only"\n', 'subject.py', pluginRoot);
+  assert.deepEqual(descriptors[0].executableLines, []);
+  assert.match(functionLineCoverage(descriptors[0], descriptors, new Map()).unverified, /No executable LCOV lines/);
 });

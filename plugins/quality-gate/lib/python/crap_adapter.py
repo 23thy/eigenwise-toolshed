@@ -4,6 +4,7 @@ import hashlib
 import json
 import pathlib
 import sys
+from types import CodeType
 
 VERSION = "python-ast-1"
 BODIES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
@@ -141,10 +142,19 @@ def descriptor(node, name, identity, parent, role, reason):
     }
 
 
+def executable_line_numbers(code):
+    lines = {line for _, _, line in code.co_lines() if line}
+    for constant in code.co_consts:
+        if isinstance(constant, CodeType):
+            lines.update(executable_line_numbers(constant))
+    return lines
+
+
 class BodyCollector:
     def __init__(self, tree, filename):
         self.filename = filename
         self.imports = imported_names(tree)
+        self.executable_lines = executable_line_numbers(compile(tree, filename, "exec", dont_inherit=True, optimize=0))
         self.rows = []
         self.ordinals = {}
 
@@ -156,7 +166,9 @@ class BodyCollector:
         self.ordinals[key] = ordinal + 1
         identity = parent + "/" + type(node).__name__ + ":" + name + "#" + str(ordinal)
         role, reason = oracle_role(node, self.filename, owner, self.imports)
-        self.rows.append(descriptor(node, name, identity, parent, role, reason))
+        row = descriptor(node, name, identity, parent, role, reason)
+        row["executableLines"] = sorted(set(row["ownedLines"]) & self.executable_lines)
+        self.rows.append(row)
         for child in ast.iter_child_nodes(node):
             self.walk(child, node, names + [local_name], identity, ("", False))
 
