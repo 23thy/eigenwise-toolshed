@@ -128,15 +128,19 @@ def selected_oracle_role(role, reason, selector):
 
 
 class OwnedBody(ast.NodeTransformer):
+    def __init__(self, boundaries):
+        self.boundaries = boundaries
+
     def visit(self, node):
-        if isinstance(node, BODIES):
+        if isinstance(node, self.boundaries):
             return ast.copy_location(ast.Name(id=getattr(node, "name", "<lambda>"), ctx=ast.Load()), node)
         return super().visit(node)
 
 
-def owned_nodes(node):
+def owned_nodes(node, policy):
+    boundaries = BODIES + (ast.ClassDef,) if policy == NATIVE_ORACLE_POLICY else BODIES
     body = node.body if isinstance(node.body, list) else [node.body]
-    return [OwnedBody().visit(copy.deepcopy(statement)) for statement in body]
+    return [OwnedBody(boundaries).visit(copy.deepcopy(statement)) for statement in body]
 
 
 def decision_count(node):
@@ -263,7 +267,7 @@ def owned_source_bytes(node, source, line_offsets):
 
 
 def descriptor(node, name, identity, parent, role, reason, source, line_offsets, policy):
-    statements = owned_nodes(node)
+    statements = owned_nodes(node, policy)
     nodes = body_nodes(statements)
     assertions = sum(isinstance(child, ast.Assert) for child in nodes)
     decisions = body_decisions(statements, nodes, role, policy)

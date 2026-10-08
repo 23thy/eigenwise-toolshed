@@ -259,3 +259,61 @@ test('Python policy enum stays current in CLI README and prose', async () => {
   assert.ok(PYTHON_POLICIES.every((policy) => readme.includes(policy) && prose.includes(policy)));
   assert.ok(['pythonOracles', 'oracleSelector', 'oracleReason'].every((field) => readme.includes(field) && prose.includes(field)));
 });
+
+for (const [label, classBody, defaultComplexity, defaultAssertions] of [
+  ['five class asserts', '        assert True\n'.repeat(5), 6, 5],
+  ['class branch loop try', '        if value:\n            pass\n        for item in []:\n            pass\n        else:\n            pass\n        try:\n            pass\n        except ValueError:\n            pass\n        else:\n            pass\n', 4, 0],
+]) {
+  test('Native Python isolates local ' + label, () => {
+    const text = 'def subject(value):\n    class Local:\n' + classBody + '    return Local\n';
+    const [ordinary] = pythonDescriptors(text, 'subject.py', pluginRoot, nativePolicy);
+    assert.equal(ordinary.complexity, 1);
+    assert.equal(ordinary.decisions, 0);
+    assert.equal(ordinary.assertionStatements, 0);
+    const [legacy] = pythonDescriptors(text, 'subject.py', pluginRoot, defaultPolicy);
+    assert.equal(legacy.complexity, defaultComplexity);
+    assert.equal(legacy.assertionStatements, defaultAssertions);
+  });
+}
+
+test('Native Python isolates class decorators bases and decisions but keeps parent and independent methods and lambdas', () => {
+  const text = 'def subject(value):\n    if value:\n        pass\n    assert value or value == 0\n    @decorate(value or False)\n    class Local(Base if value else Other):\n        if value:\n            pass\n        assert True\n        callback = lambda item: item if item else 0\n        @decorate(lambda item: item or 0)\n        def method(self, choice=lambda item: item if item else 0):\n            if value:\n                pass\n            assert value or value == 0\n    return Local\n';
+  const rows = pythonDescriptors(text, 'subject.py', pluginRoot, nativePolicy);
+  assert.deepEqual(rows.map((row) => [row.name, row.complexity, row.assertionStatements]), [
+    ['subject', 3, 1], ['subject.Local.callback.<lambda>', 2, 0],
+    ['subject.Local.method', 3, 1], ['subject.Local.method.<lambda>', 2, 0], ['subject.Local.method.<lambda>', 2, 0],
+  ]);
+  assert.equal(rows[1].parent, rows[0].identity);
+  assert.equal(rows[2].parent, rows[0].identity);
+  assert.ok(rows.slice(3).every((row) => row.parent === rows[2].identity));
+});
+
+for (const [label, name, filename, oracles, complexity, role] of [
+  ['source-named oracle', 'test_subject', 'test_subject.py', undefined, 3, 'oracle'],
+  ['exact helper oracle', '_assert_unchanged', 'subject.py', [{file:'subject.py',name:'_assert_unchanged',reason:'class isolation oracle'}], 3, 'oracle'],
+  ['empty allowlist', 'test_subject', 'test_subject.py', [], 2, 'production'],
+]) {
+  test('Native Python assertion inventory isolates local classes for ' + label, () => {
+    const text = 'def ' + name + '(value):\n    assert value or value == 0, f"{1 if value else 0}"\n    class Local:\n' + '        assert True\n'.repeat(5) + '        if value:\n            pass\n        def method(self):\n            assert True\n    return Local\n';
+    const rows = pythonDescriptors(text, filename, pluginRoot, nativePolicy, oracles);
+    assert.equal(rows[0].complexity, complexity);
+    assert.equal(rows[0].assertionStatements, 1);
+    assert.equal(rows[0].oracleClassification, role);
+    assert.deepEqual(rows.slice(1).map((row) => [row.name, row.complexity, row.assertionStatements, row.oracleClassification]), [
+      [name + '.Local.method', 2, 1, 'production'],
+    ]);
+  });
+}
+
+test('Python CLI help describes source convention or exact helper selection with unselected helpers ordinary', () => {
+  const help = spawnSync(process.execPath, [entry, '--help'], {encoding:'utf8',timeout:30000});
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /source-named test_\* or explicitly selected exact helper oracles/);
+  assert.match(help.stdout, /Unselected helpers stay ordinary/);
+  const [selected] = pythonDescriptors('def prepare(value):\n    assert value or value == 0\n', 'subject.py', pluginRoot, nativePolicy, [{file:'subject.py',name:'prepare',reason:'helper assertion oracle'}]);
+  assert.equal(selected.oracleClassification, 'oracle');
+  assert.equal(selected.complexity, 2);
+  const [unselected] = pythonDescriptors('def prepare(value):\n    assert value or value == 0\n', 'subject.py', pluginRoot, nativePolicy, []);
+  assert.equal(unselected.oracleClassification, 'production');
+  assert.equal(unselected.assertionStatements, 1);
+});

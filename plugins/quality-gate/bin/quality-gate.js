@@ -19,8 +19,9 @@ stdlib AST adapter through python3 or py -3 (no radon dependency), with qualifie
 --python-policy (config pythonPolicy) explicitly selects ${PYTHON_POLICIES.join(" or ")}; default ${DEFAULT_PYTHON_POLICY}.
 config pythonOracles optionally supplies exact {file, name, reason} entries as an authoritative allowlist.
 Absent collection uses source-name rules; [] qualifies no oracles. Fixtures/setup always take precedence.
-The native policy counts ordinary assertions without traversing them; only source-named test_* oracles
-traverse predicates/messages without assert surcharge. Test-class helpers stay ordinary.
+The native policy counts ordinary assertions without traversing them; source-named test_* or explicitly selected exact helper oracles
+traverse predicates/messages without assert surcharge. Unselected helpers stay ordinary.
+Nested class bodies do not charge enclosing native-policy bodies; methods and lambdas remain independently owned.
 Every new or physically modified owned body must score strictly below 6 with measured coverage.
 Comments and formatting count; equal/lowered complexity never exempts a changed body.
 Untouched bodies and independently edited nested bodies do not charge their parents.
