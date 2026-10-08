@@ -211,9 +211,7 @@ function publicationAction(command: string, cwd: string): { label: string; repo:
   return null;
 }
 
-// The whole refusal is projected into the 768-byte PreToolUse budget and truncated from the end, where the
-// recovery command sits. A 94-character CI temp path printed twice pushed it over (SQ-3534), so the
-// repo appears once, inside that command.
+// Keep the repository path only in the recovery command so long temp paths fit the hook output budget.
 function destructiveRefusal(label: string, repo: string, dirty: string[]): string {
   const shown = dirty.slice(0, 10).map((line) => `  ${line}`);
   if (dirty.length > shown.length) shown.push(`  … +${dirty.length - shown.length} more`);

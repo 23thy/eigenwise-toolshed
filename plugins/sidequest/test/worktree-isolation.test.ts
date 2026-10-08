@@ -2474,11 +2474,11 @@ test('an unrelated executor subagent does not inherit a session fallback claim',
 });
 
 test('a destructive git command is refused while the shared checkout carries uncommitted work', () => {
-  // test:full nests TMP under a sidequest-full-suite-* directory, and on windows-latest that made the
-  // fixture path 94 characters: printed twice, the refusal passed the 768-byte PreToolUse budget and lost
-  // its last line, the recovery command (SQ-3534). The same nesting here reproduces that length, under an
-  // `sq-` prefix so _temp-cleanup collects it.
-  const repo = initRepo('sq-destructive-repo-', fs.mkdtempSync(path.join(os.tmpdir(), 'sq-nested-full-suite-')));
+  // Match CI's nested temp paths on every platform; the sq- prefix lets _temp-cleanup collect the parent.
+  const temporaryParent = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'sq-sidequest-full-suite-')));
+  const repositoryPrefix = 'sq-destructive-repo-'.padEnd(94 - temporaryParent.length, '-');
+  const repo = initRepo(repositoryPrefix, temporaryParent);
+  assert.ok(repo.length >= 94, 'exercises at least the Windows CI shared-checkout path length');
   store.ensureProject(repo);
   const clean = runHook(GUARD_DESTRUCTIVE, {
     cwd: repo,
@@ -2496,9 +2496,11 @@ test('a destructive git command is refused while the shared checkout carries unc
   assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
   const reason = out.hookSpecificOutput.permissionDecisionReason;
   assert.ok(reason.includes('executor-work.txt'), 'lists what would be destroyed');
-  assert.ok(reason.includes('git stash push'), 'names the recoverable alternative');
-  assert.ok(reason.includes('sidequest recover-shared'), 'names the exact recovery action');
+  assert.ok(reason.includes('git stash push -u -m "sidequest recovery"'), 'preserves the complete named-stash command');
+  assert.ok(reason.includes(`sidequest recover-shared --project "${worktrees.canonicalPath(repo)}" --stash <stash@{n}> --yes`), 'preserves the complete recovery command and project path');
+  assert.ok(reason.endsWith('That exact recovery action verifies the stash before it runs `git reset --hard && git clean -fd`.'), 'preserves the final stash-verification warning');
   assert.ok(!reason.includes('content omitted'), `fits the PreToolUse budget untruncated at a ${repo.length}-character repo path`);
+  assert.ok(Buffer.byteLength(reason, 'utf8') <= 768, 'stays within the PreToolUse byte budget');
 
   const narrow = runHook(GUARD_DESTRUCTIVE, {
     cwd: repo,
