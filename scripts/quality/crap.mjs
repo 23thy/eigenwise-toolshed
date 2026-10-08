@@ -59,7 +59,7 @@ export async function sourceMetrics(sourcePath, coverageScripts) {
 function runGit(argumentsList, cwd = repositoryRoot) {
   const result = spawnSync('git', argumentsList, { cwd, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr.trim() || `git ${argumentsList.join(' ')} failed`);
-  return result.stdout.trim();
+  return argumentsList[0] === 'show' ? result.stdout : result.stdout.trim();
 }
 
 function integrationBranch() {
@@ -191,14 +191,13 @@ async function measureMetrics(changedPaths, coverageDirectory) {
 const UNCLASSIFIED = 'unclassified';
 const CLASS_SECTIONS = [
   ['new', `NEW: not at base, must score below ${THRESHOLD}`],
-  ['modified-raised', `MODIFIED-RAISED: complexity rose since base, must score below ${THRESHOLD} or the added branches move into a new helper that does`],
-  [LEGACY_UNCHANGED, 'LEGACY-UNCHANGED: touched without new complexity, informational, never a failure'],
+  ['modified-raised', `MODIFIED-RAISED: complexity rose since base, must score below ${THRESHOLD}`],
+  [LEGACY_UNCHANGED, 'LEGACY-UNCHANGED: physically modified with equal or lower complexity, must score below 6'],
   [UNCLASSIFIED, 'UNCLASSIFIED: no base comparison (another language, or an unchanged function under --all)'],
 ];
-const ENFORCEMENT_RULE = `only new complexity the change introduced is enforced below ${THRESHOLD} (NEW and MODIFIED-RAISED rows); LEGACY-UNCHANGED rows are informational and never fail`;
+const ENFORCEMENT_RULE = `every new or physically modified owned body must score strictly below ${THRESHOLD}; classifications never exempt changed bodies`;
 
 function metricStatus(metric) {
-  if (metric.classification === LEGACY_UNCHANGED) return 'LEGACY';
   if (metric.unverified) return 'UNVERIFIED';
   return metric.crap >= THRESHOLD ? 'FAIL' : 'PASS';
 }

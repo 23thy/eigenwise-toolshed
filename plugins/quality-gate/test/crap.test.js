@@ -119,15 +119,15 @@ test('empty scope says why and never says passed or runs coverage', async (conte
   assert.match(formatCrapReport(await crapReport({ project: root })), /No supported source files matched/);
 });
 
-test('base ratchet reports legacy edits and enforces only new or raised complexity', async (context) => {
+test('base comparison enforces every changed body without legacy exemptions', async (context) => {
   const original = 'function legacy(value) { if (value === 1) return 1; if (value === 2) return 2; if (value === 3) return 3; if (value === 4) return 4; if (value === 5) return 5; return 0; }\n';
   const root = await fixture(context, { 'source.js': original });
   const base = commitBaseline(root);
   await fs.writeFile(path.join(root, 'source.js'), original.replace('return 0', 'return -1') + 'function added(value) { return value ? 1 : 0; }\n');
   const report = await crapReport({ project: root, base, ccOnly: true });
-  assert.equal(report.exitCode, 0);
+  assert.equal(report.exitCode, 1);
   assert.deepEqual(report.changedMetrics.map((row) => row.classification), ['legacy-unchanged', 'new']);
-  assert.match(formatCrapReport(report), /LEGACY.*cc=6/);
+  assert.match(formatCrapReport(report), /FAIL.*cc=6/);
   await fs.writeFile(path.join(root, 'source.js'), original.replace('return 0', 'if (value === 6) return 6; return 0'));
   const raised = await crapReport({ project: root, base, ccOnly: true });
   assert.equal(raised.exitCode, 1);

@@ -103,7 +103,7 @@ export async function createAnalyzer(projectRoot) {
           const identity = `${parentId}/${functionKind(node)}:${name}#${ordinal}`;
           const start = node.getStart();
           const end = node.end;
-          functions.push({ identity, parent: parentId, name, start, runtimeStart: runtimeStart(node, text), bodyStart: node.body.getStart(), end, line: sourceFile.getLineAndCharacterOfPosition(start).line + 1, complexity: cyclomaticComplexity(node), fingerprint: crypto.createHash('sha256').update(ownText(node, text).replace(/\s+/g, ' ')).digest('hex') });
+          functions.push({ identity, parent: parentId, name, start, runtimeStart: runtimeStart(node, text), bodyStart: node.body.getStart(), end, line: sourceFile.getLineAndCharacterOfPosition(start).line + 1, complexity: cyclomaticComplexity(node), fingerprint: crypto.createHash('sha256').update(ownText(node, text)).digest('hex') });
           node.forEachChild((child) => visit(child, identity));
         } else node.forEachChild((child) => visit(child, parentId));
       }
@@ -384,9 +384,6 @@ function pathAbsentAtBase(error, baselinePath) {
 
 export const LEGACY_UNCHANGED = 'legacy-unchanged';
 
-// Only complexity the change introduced is enforced: a function new since base, or one whose
-// cyclomatic count rose above its base partner's. Equal or lower is a pass-through edit inside a
-// legacy body, reported with its number but never a refusal to land the change.
 function classifyChange(metric, partner) {
   if (!partner) return 'new';
   return metric.complexity > partner.complexity ? 'modified-raised' : LEGACY_UNCHANGED;

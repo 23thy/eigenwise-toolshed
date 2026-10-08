@@ -5,6 +5,7 @@ import json
 import pathlib
 import sys
 from types import CodeType
+from itertools import accumulate
 
 VERSION = "python-ast-1"
 BODIES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
@@ -122,14 +123,59 @@ def owned_line_numbers(nodes):
     return sorted({child.lineno for child in nodes if hasattr(child, "lineno")})
 
 
-def descriptor(node, name, identity, parent, role, reason):
+def source_end(node, source, line_offsets):
+    if isinstance(node, ast.Lambda):
+        return line_offsets[node.end_lineno - 1] + node.end_col_offset
+    end = line_offsets[node.end_lineno]
+    for line_number in range(node.end_lineno, len(line_offsets) - 1):
+        line = source[line_offsets[line_number]:line_offsets[line_number + 1]]
+        if not line.strip():
+            continue
+        if len(line) - len(line.lstrip(b" \t")) <= node.col_offset:
+            break
+        end = line_offsets[line_number + 1]
+    return end
+
+
+def source_start(node, source, line_offsets):
+    decorators = getattr(node, "decorator_list", [])
+    if not decorators:
+        return line_offsets[node.lineno - 1] + node.col_offset
+    line = decorators[0].lineno - 1
+    while not source[line_offsets[line]:line_offsets[line + 1]].lstrip(b" \t").startswith(b"@"):
+        line -= 1
+    return line_offsets[line] + node.col_offset
+
+
+def source_span(node, source, line_offsets):
+    return source_start(node, source, line_offsets), source_end(node, source, line_offsets)
+
+
+def nested_bodies(node):
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, BODIES):
+            yield child
+        else:
+            yield from nested_bodies(child)
+
+
+def owned_source_bytes(node, source, line_offsets):
+    cursor, end = source_span(node, source, line_offsets)
+    pieces = []
+    for nested in nested_bodies(node):
+        start, nested_end = source_span(nested, source, line_offsets)
+        pieces.append(source[cursor:start])
+        cursor = nested_end
+    pieces.append(source[cursor:end])
+    return b"".join(pieces)
+
+
+def descriptor(node, name, identity, parent, role, reason, source, line_offsets):
     statements = owned_nodes(node)
     nodes = body_nodes(statements)
     assertions = sum(isinstance(child, ast.Assert) for child in nodes)
     decisions = sum(decision_count(child) for child in nodes)
-    definition = copy.deepcopy(node)
-    definition.body = statements if isinstance(node.body, list) else statements[0]
-    fingerprint = ast.dump(definition, include_attributes=False)
+    fingerprint = owned_source_bytes(node, source, line_offsets)
     return {
         "identity": identity, "parent": parent, "name": name,
         "line": node.lineno, "endLine": node.end_lineno,
@@ -137,7 +183,7 @@ def descriptor(node, name, identity, parent, role, reason):
         "complexity": 1 + decisions + assertions * int(role != "oracle"),
         "decisions": decisions, "assertionStatements": assertions,
         "oracleClassification": role, "oracleReason": reason,
-        "fingerprint": hashlib.sha256((fingerprint + role).encode()).hexdigest(),
+        "fingerprint": hashlib.sha256(fingerprint).hexdigest(),
         "source": "python-ast", "adapterVersion": VERSION,
     }
 
@@ -151,8 +197,10 @@ def executable_line_numbers(code):
 
 
 class BodyCollector:
-    def __init__(self, tree, filename):
+    def __init__(self, tree, filename, text):
         self.filename = filename
+        self.source = text.encode("utf-8")
+        self.line_offsets = list(accumulate((len(line) for line in self.source.splitlines(keepends=True)), initial=0))
         self.imports = imported_names(tree)
         self.executable_lines = executable_line_numbers(compile(tree, filename, "exec", dont_inherit=True, optimize=0))
         self.rows = []
@@ -166,7 +214,7 @@ class BodyCollector:
         self.ordinals[key] = ordinal + 1
         identity = parent + "/" + type(node).__name__ + ":" + name + "#" + str(ordinal)
         role, reason = oracle_role(node, self.filename, owner, self.imports)
-        row = descriptor(node, name, identity, parent, role, reason)
+        row = descriptor(node, name, identity, parent, role, reason, self.source, self.line_offsets)
         row["executableLines"] = sorted(set(row["ownedLines"]) & self.executable_lines)
         self.rows.append(row)
         for child in ast.iter_child_nodes(node):
@@ -185,7 +233,7 @@ class BodyCollector:
 
 def analyze(text, filename):
     tree = ast.parse(text, filename=filename)
-    collector = BodyCollector(tree, filename)
+    collector = BodyCollector(tree, filename, text)
     collector.walk(tree, None, [], "<root>", ("", False))
     return {"adapterVersion": VERSION, "rows": collector.rows}
 
