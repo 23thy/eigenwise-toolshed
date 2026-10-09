@@ -17,7 +17,10 @@ measure requires --base for repository files. Explicit new external .js/.cjs/.mj
 need no Git repository or base; every owned body is enforced. Declarations must be normalized,
 canonical regular files outside --project, with strict UTF-8 (BOM offsets unsupported).
 External rows include admission=external-new, absolute identity, raw SHA-256 and evaluator versions.
-Capture children through inherited NODE_OPTIONS with the canonical lib/core.mjs file URL.
+Capture children through inherited NODE_OPTIONS with the canonical lib/core.mjs file URL, plus QUALITY_GATE_V8_CAPTURE.
+In the inspected Claude Code 2.1.295, a direct worktree-isolated Bash startup assignment NODE_OPTIONS=--import=<url>
+followed by a Node-family command is refused by the host guard (startup code cannot be shown not to be Git); no shipped
+capture-launch command supports that exact boundary. Stop after that actual refusal; missing measurements stay UNVERIFIED.
 
 crap reads .claude/quality-gate/crap.json (falls back to .claude/quartermaster/crap.json).
 --project selects the tree measured, including a linked worktree; without it the cwd's Git root is used.
