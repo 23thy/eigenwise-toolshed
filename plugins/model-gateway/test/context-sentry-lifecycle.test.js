@@ -194,3 +194,51 @@ test('Grok sentry rearms only completed ordinary SSE and JSON responses and bypa
   assertOverflow(await send(gateway, ordinary), 106);
   assert.equal((await send(gateway, compact)).status, 200, 'successful lower-usage Grok compaction can still run');
 });
+
+
+test('high-usage Codex JSON compaction keeps the refusal latched and lower usage resets it', async (testRunner) => {
+  const gateway = await lifecycleGateway(testRunner, [sseAnswer(codexUsage(101)),
+    jsonAnswer(200, { type: 'message', content: [], stop_reason: 'end_turn', usage: { input_tokens: 102 } }),
+    sseAnswer(codexUsage(103, false)),
+    jsonAnswer(200, { type: 'message', content: [], stop_reason: 'end_turn', usage: { input_tokens: 20 } }),
+    jsonAnswer(200, { type: 'message', content: [], stop_reason: 'end_turn', usage: { input_tokens: 104 } })]);
+  assert.equal((await send(gateway)).status, 200);
+  assertOverflow(await send(gateway), 101);
+  assert.equal((await send(gateway, compactionPayload)).status, 200);
+  assert.equal((await send(gateway)).status, 200, 'high-usage Codex JSON compaction keeps the refusal latched');
+  assert.equal((await send(gateway, compactionPayload)).status, 200, 'lower-usage JSON compaction still bypasses the sentry');
+  assert.equal((await send(gateway)).status, 200, 'lower-usage JSON compaction resets the existing watermark');
+  assertOverflow(await send(gateway), 104);
+  assert.equal(gateway.forwarded(), 5);
+});
+
+for (const stopReason of [null, 'max_tokens', 'pause_turn', 'refusal', 'model_context_window_exceeded', 'unknown', undefined]) {
+  test('incomplete Codex JSON keeps the refusal latched: ' + String(stopReason), async (testRunner) => {
+    const gateway = await lifecycleGateway(testRunner, [sseAnswer(codexUsage(101)),
+      jsonAnswer(200, { type: 'message', content: [], stop_reason: stopReason, usage: { input_tokens: 102 } }),
+      sseAnswer(codexUsage(103, false)),
+      jsonAnswer(200, { type: 'message', content: [], stop_reason: 'end_turn', usage: { input_tokens: 104 } })]);
+    assert.equal((await send(gateway)).status, 200);
+    assertOverflow(await send(gateway), 101);
+    assert.equal((await send(gateway, { ...ordinaryPayload, stream: false })).status, 200);
+    assert.equal((await send(gateway)).status, 200, 'incomplete Codex JSON keeps the refusal latched');
+    assert.equal((await send(gateway)).status, 200);
+    assertOverflow(await send(gateway), 104);
+    assert.equal(gateway.forwarded(), 4);
+  });
+}
+
+for (const stopReason of ['end_turn', 'stop_sequence', 'tool_use']) {
+  test('completed ordinary Codex JSON rearms the refusal: ' + stopReason, async (testRunner) => {
+    const content = stopReason === 'tool_use'
+      ? [{ type: 'tool_use', id: 'synthetic-tool', name: 'synthetic_tool', input: {} }]
+      : [{ type: 'text', text: 'synthetic answer' }];
+    const gateway = await lifecycleGateway(testRunner, [sseAnswer(codexUsage(101)),
+      jsonAnswer(200, { type: 'message', content, stop_reason: stopReason, usage: { input_tokens: 104 } })]);
+    assert.equal((await send(gateway)).status, 200);
+    assertOverflow(await send(gateway), 101);
+    assert.equal((await send(gateway, { ...ordinaryPayload, stream: false })).status, 200);
+    assertOverflow(await send(gateway), 104);
+    assert.equal(gateway.forwarded(), 2);
+  });
+}

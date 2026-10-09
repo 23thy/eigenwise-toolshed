@@ -1422,7 +1422,8 @@ function runWorker() {
   function completedCodexJson(body) {
     try {
       const response = JSON.parse(body.toString());
-      return response?.type === 'message' && !response.error;
+      return response?.type === 'message' && !response.error
+        && ['end_turn', 'stop_sequence', 'tool_use'].includes(response.stop_reason);
     } catch {
       return false;
     }
@@ -1933,7 +1934,7 @@ function runWorker() {
           usageCapture?.observeJson(upstreamBody);
           const completed = completedCodexJson(upstreamBody);
           if (completed) recordSentryUsage(sessionId,
-            { type: 'message_delta', usage: JSON.parse(upstreamBody).usage }, contextModel, true);
+            { type: 'message_delta', usage: JSON.parse(upstreamBody).usage }, contextModel, !isCompactionRequest(JSON.parse(body)));
           const filtered = rewriteCodexJson(upstreamBody, advertisedModel, filterPlanTools);
           routeTelemetry?.finish(upRes.statusCode, completed ? null : 'upstream_error');
           resHeaders['content-length'] = filtered.length;
