@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createAnalyzer, functionCoverage, readCoverage } from '../lib/core.mjs';
+import { createAnalyzer, functionCoverage, originalOffsetMapper, readCoverage } from '../lib/core.mjs';
 import { measureSource } from '../lib/measure.mjs';
 
 const pluginRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -128,6 +128,47 @@ test('authentic compiler maps bind minified nested bodies without naming or scal
     assert.deepEqual(metrics.map(metric => [metric.name, metric.coverage]), [['outer', 1], ['<anonymous>', 1]]);
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+async function nativeTscOutput(compileRoot, source) {
+  await fs.writeFile(path.join(compileRoot, 'original.ts'), source);
+  const tsc = path.join(pluginRoot, 'node_modules/typescript/bin/tsc');
+  const compile = spawnSync(process.execPath, [tsc, 'original.ts', '--inlineSourceMap', '--inlineSources', '--target', 'es2022', '--module', 'esnext'], { cwd: compileRoot, encoding: 'utf8', timeout: 30000 });
+  assert.equal(compile.status, 0, compile.stdout + compile.stderr);
+  return fs.readFile(path.join(compileRoot, 'original.js'), 'utf8');
+}
+
+test('a boundary byte without its own exact native tsc correspondence stays unmapped', async () => {
+  const source = 'const input: unknown = 1;\nexport const value = input;\n';
+  const compileRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'native-tsc-'));
+  try {
+    const output = await nativeTscOutput(compileRoot, source);
+    const data = JSON.parse(Buffer.from(output.match(/base64,([^\s]+)/)[1], 'base64').toString('utf8'));
+    const toOriginal = originalOffsetMapper({ data, lineLengths: output.split('\n').map(line => line.length) }, source, output);
+    const afterInput = output.indexOf(' = 1');
+    assert.equal(source[toOriginal(afterInput)], ':', 'the preceding text alone reaches the erased type annotation');
+    assert.equal(toOriginal(afterInput, 1), null);
+  } finally {
+    await fs.rm(compileRoot, { recursive: true, force: true });
+  }
+});
+
+test('a native tsc block end before a re-indented closing brace binds through that brace', async () => {
+  const source = 'export function outer(flag: boolean) {\nfunction inner() {\n  if (flag) return 1;\n  const unused = 2;\n  return unused;\n}\nreturn inner();\n}\nouter(true);\n';
+  const compileRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'native-tsc-'));
+  let fixture;
+  try {
+    fixture = await captureFixture(await nativeTscOutput(compileRoot, source));
+    fixture.originalPath = path.join(fixture.root, 'original.ts');
+    await fs.writeFile(fixture.originalPath, source);
+    const metrics = await compilerMetrics(fixture);
+    assert.deepEqual(metrics.map(metric => [metric.name, metric.unverified]), [['outer', undefined], ['inner', undefined]]);
+    const inner = metrics.find(metric => metric.name === 'inner');
+    assert.ok(inner.coverage > 0 && inner.coverage < 1, `the skipped tail measures as uncovered, got ${inner.coverage}`);
+  } finally {
+    await fs.rm(compileRoot, { recursive: true, force: true });
+    if (fixture) await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
 
