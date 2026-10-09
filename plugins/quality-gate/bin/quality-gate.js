@@ -4,17 +4,24 @@ import { parseArgs } from 'node:util';
 import { measureFiles } from '../lib/measure.mjs';
 import { crapReport, formatCrapReport, writeReceipt } from '../lib/crap.mjs';
 import { projectRoot } from '../lib/crap-inputs.mjs';
+import { PYTHON_POLICIES, DEFAULT_PYTHON_POLICY } from '../lib/python.mjs';
 
 const HELP = `Usage:
   quality-gate crap [--project <root>] [--base <revision>] [--lcov <path>]
                     [--coverage-command "<command>"] [--cc-only] [--json]
-                    [--complexity <lizard.csv>]
+                    [--complexity <lizard.csv>] [--python-policy <policy>]
   quality-gate measure --project <root> --base <revision> --coverage <V8-directory> <files...>
 
 crap reads .claude/quality-gate/crap.json (falls back to .claude/quartermaster/crap.json).
 --project selects the tree measured, including a linked worktree; without it the cwd's Git root is used.
 JS/TS runtime functions use the TypeScript AST, PHP/Vue use lizard. Python uses the versioned
 stdlib AST adapter through python3 or py -3 (no radon dependency), with qualified oracle rows. No JavaScript or TypeScript lizard row is scored, including --complexity input.
+--python-policy (config pythonPolicy) explicitly selects ${PYTHON_POLICIES.join(" or ")}; default ${DEFAULT_PYTHON_POLICY}.
+config pythonOracles optionally supplies exact {file, name, reason} entries as an authoritative allowlist.
+Absent collection uses source-name rules; [] qualifies no oracles. Fixtures/setup always take precedence.
+The native policy counts ordinary assertions without traversing them; source-named test_* or explicitly selected exact helper oracles
+traverse predicates/messages without assert surcharge. Unselected helpers stay ordinary.
+Nested class bodies do not charge enclosing native-policy bodies; methods and lambdas remain independently owned.
 Every new or physically modified owned body must score strictly below 6 with measured coverage.
 Comments and formatting count; equal/lowered complexity never exempts a changed body.
 Untouched bodies and independently edited nested bodies do not charge their parents.
@@ -30,7 +37,7 @@ Receipts, including unverified runs, go to .claude/quality-gate/receipts/<head-s
 `;
 
 function argumentsForCommand() {
-  const options = Object.fromEntries(['project', 'base', 'coverage', 'lcov', 'coverage-command', 'complexity', 'ratchet', 'max'].map((name) => [name, { type: 'string' }]));
+  const options = Object.fromEntries(['project', 'base', 'coverage', 'lcov', 'coverage-command', 'complexity', 'ratchet', 'max', 'python-policy'].map((name) => [name, { type: 'string' }]));
   Object.assign(options, Object.fromEntries(['cc-only', 'json', 'help'].map((name) => [name, { type: 'boolean' }])));
   return parseArgs({ allowPositionals: true, options });
 }
@@ -44,7 +51,7 @@ async function runMeasure(values, files) {
 
 async function capturedReport(values) {
   try {
-    return await crapReport({ ...values, ccOnly: values['cc-only'], coverageCommand: values['coverage-command'] });
+    return await crapReport({ ...values, ccOnly: values['cc-only'], coverageCommand: values['coverage-command'], pythonPolicy: values['python-policy'] });
   } catch (error) {
     const unverified = [{ relativePath: '<gate>', line: 1, name: 'prerequisite', unverified: error.message }];
     return { root: projectRoot(values.project || process.cwd()), base: null, files: {}, metrics: [], changedMetrics: [], unverified, failures: [], warnings: [], checked: 0, max: 6, exitCode: 2, verdict: 'unverified', ccOnly: Boolean(values['cc-only']) };
