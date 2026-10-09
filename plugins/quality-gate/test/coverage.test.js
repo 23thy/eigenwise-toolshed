@@ -32,7 +32,7 @@ async function captureFixture(text) {
   await fs.mkdir(coverageDirectory);
   assert.deepEqual(await fs.readdir(coverageDirectory), []);
   await fs.writeFile(sourcePath, text);
-  const { NODE_TEST_CONTEXT, NODE_V8_COVERAGE, ...environment } = process.env;
+  const { NODE_TEST_CONTEXT, NODE_V8_COVERAGE, NODE_OPTIONS, ...environment } = process.env;
   const execution = spawnSync(process.execPath, ['--import', corePath, sourcePath], { encoding: 'utf8', timeout: 30000, env: { ...environment, QUALITY_GATE_V8_CAPTURE: coverageDirectory } });
   assert.equal(execution.status, 0, execution.stderr);
   return { root, sourcePath, coverageDirectory };
