@@ -38,7 +38,7 @@ test('resolves the scored project compiler before the plugin dependency', async 
     assert.ok(resolveCompiler(project).resolve('typescript/unstable/ast').startsWith(project));
     assert.deepEqual((await (await createAnalyzer(project)).collectFunctions('const double = (value) => value * 2;', 'subject.js')).map((descriptor) => descriptor.name), ['double']);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
