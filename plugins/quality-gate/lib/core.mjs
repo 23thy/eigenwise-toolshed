@@ -255,11 +255,12 @@ function mappedSource(capture, source) {
   }
 }
 
+// Native return annotations can erase the body-start segment; TypeScript-only modifiers can erase the declaration start.
 function runtimeBodyRecords(descriptor, source, capture) {
   if (capture.unverified) return capture;
   const toOriginal = mappedSource(capture, source);
   if (!toOriginal) return { unverified: `executed bytes differ from ${source.relativePath}; an authentic matching source map is required` };
-  const twins = capture.descriptors.filter((candidate) => toOriginal(candidate.bodyStart) === descriptor.bodyStart && toOriginal(candidate.end - 1) === descriptor.end - 1);
+  const twins = capture.descriptors.filter((candidate) => (toOriginal(candidate.bodyStart) === descriptor.bodyStart || toOriginal(candidate.runtimeStart, 1) === descriptor.runtimeStart) && toOriginal(candidate.end - 1) === descriptor.end - 1);
   if (twins.length !== 1) return { unverified: 'missing or ambiguous source-map correspondence for the owned runtime body' };
   const twin = twins[0];
   const records = capture.records.filter((record) => record.ranges[0]?.startOffset === twin.runtimeStart && record.ranges[0]?.endOffset === twin.end);
