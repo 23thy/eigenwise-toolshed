@@ -1422,8 +1422,7 @@ function runWorker() {
   function completedCodexJson(body) {
     try {
       const response = JSON.parse(body.toString());
-      return response?.type === 'message' && !response.error
-        && ['end_turn', 'stop_sequence', 'tool_use'].includes(response.stop_reason);
+      return response?.type === 'message' && !response.error;
     } catch {
       return false;
     }
@@ -1933,8 +1932,12 @@ function runWorker() {
           const upstreamBody = Buffer.concat(chunks);
           usageCapture?.observeJson(upstreamBody);
           const completed = completedCodexJson(upstreamBody);
-          if (completed) recordSentryUsage(sessionId,
-            { type: 'message_delta', usage: JSON.parse(upstreamBody).usage }, contextModel, !isCompactionRequest(JSON.parse(body)));
+          if (completed) {
+            const response = JSON.parse(upstreamBody);
+            const ordinaryTurnCompleted = ['end_turn', 'stop_sequence', 'tool_use'].includes(response.stop_reason)
+              && !isCompactionRequest(JSON.parse(body));
+            recordSentryUsage(sessionId, { type: 'message_delta', usage: response.usage }, contextModel, ordinaryTurnCompleted);
+          }
           const filtered = rewriteCodexJson(upstreamBody, advertisedModel, filterPlanTools);
           routeTelemetry?.finish(upRes.statusCode, completed ? null : 'upstream_error');
           resHeaders['content-length'] = filtered.length;
