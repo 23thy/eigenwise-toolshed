@@ -170,7 +170,7 @@ export function originalOffsetMapper(cacheEntry, originalText, generatedText) {
   const sourceMap = new SourceMap(cacheEntry.data);
   const generatedStarts = lineStarts(cacheEntry.lineLengths);
   const originalStarts = lineStarts(originalText.split('\n').map((line) => line.length));
-  return (offset) => {
+  return (offset, boundaryBytes = 0) => {
     const { line, column } = positionAt(generatedStarts, offset);
     const entry = sourceMap.findEntry(line, column);
     if (!Number.isInteger(entry.originalLine)) return null;
@@ -178,7 +178,7 @@ export function originalOffsetMapper(cacheEntry, originalText, generatedText) {
     if (typeof originalText[original] !== 'string') return null;
     const generated = generatedStarts[entry.generatedLine] + entry.generatedColumn;
     const delta = offset - generated;
-    if (generatedText.slice(generated, offset) !== originalText.slice(original, original + delta)) return null;
+    if (generatedText.slice(generated, offset + boundaryBytes) !== originalText.slice(original, original + delta + boundaryBytes)) return null;
     return original + delta;
   };
 }
@@ -267,9 +267,10 @@ function runtimeBodyRecords(descriptor, source, capture) {
   return { records, toOriginal };
 }
 
+// Compilers re-indent the whitespace before a closing token, so a block end that lands on it binds through the token itself.
 function mappedEnd(offset, toOriginal) {
   const last = toOriginal(offset - 1);
-  return last === null ? null : last + 1;
+  return last === null ? toOriginal(offset, 1) : last + 1;
 }
 
 function outputCoverage(descriptor, source, output) {
