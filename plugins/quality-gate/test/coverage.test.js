@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createAnalyzer, functionCoverage, originalOffsetMapper, readCoverage } from '../lib/core.mjs';
-import { measureSource } from '../lib/measure.mjs';
+import { measureSource, readOutput } from '../lib/measure.mjs';
 
 const pluginRoot = fileURLToPath(new URL('../', import.meta.url));
 const corePath = new URL('../lib/core.mjs', import.meta.url).href;
@@ -166,6 +166,74 @@ test('a native tsc block end before a re-indented closing brace binds through th
     assert.deepEqual(metrics.map(metric => [metric.name, metric.unverified]), [['outer', undefined], ['inner', undefined]]);
     const inner = metrics.find(metric => metric.name === 'inner');
     assert.ok(inner.coverage > 0 && inner.coverage < 1, `the skipped tail measures as uncovered, got ${inner.coverage}`);
+  } finally {
+    await fs.rm(compileRoot, { recursive: true, force: true });
+    if (fixture) await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+
+test('native tsc typed-return declarations bind exact starts and independent nested bodies', async () => {
+  const source = 'export function outer(flag: boolean): number {\nfunction inner(): number {\n  if (flag) return 1;\n  return 2;\n}\nreturn inner();\n}\nouter(true);\nouter(false);\n';
+  const compileRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'native-tsc-'));
+  let fixture;
+  try {
+    const output = await nativeTscOutput(compileRoot, source);
+    fixture = await captureFixture(output);
+    fixture.originalPath = path.join(fixture.root, 'original.ts');
+    await fs.writeFile(fixture.originalPath, source);
+    const data = JSON.parse(Buffer.from(output.match(/base64,([^\s]+)/)[1], 'base64').toString('utf8'));
+    const toOriginal = originalOffsetMapper({ data, lineLengths: output.split('\n').map(line => line.length) }, source, output);
+    const original = await analyzer.collectFunctions(source, fixture.originalPath);
+    const generated = await analyzer.collectFunctions(output, fixture.sourcePath);
+    assert.equal(toOriginal(generated[0].bodyStart), null, 'native return annotation erases the exact body-opening anchor');
+    assert.equal(toOriginal(generated[0].runtimeStart, 1), original[0].runtimeStart, 'native declaration start maps exactly after export');
+    assert.equal(toOriginal(generated[0].end - 1), original[0].end - 1, 'native closing token maps exactly');
+    const metrics = await compilerMetrics(fixture);
+    assert.deepEqual(metrics.map(metric => [metric.name, metric.coverage, metric.unverified]), [['outer', 1, undefined], ['inner', 1, undefined]], 'typed-return bodies require exact native declaration-start ownership');
+  } finally {
+    await fs.rm(compileRoot, { recursive: true, force: true });
+    if (fixture) await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('native tsc erased modifiers retain body-start authority', async () => {
+  const source = 'class Base { method() { return 0; } }\nclass Derived extends Base {\n  public override method() { return 1; }\n  private hidden() { return 2; }\n  public call() { return this.hidden(); }\n}\nnew Derived().method();\nnew Derived().call();\n';
+  const compileRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'native-tsc-'));
+  let fixture;
+  try {
+    fixture = await captureFixture(await nativeTscOutput(compileRoot, source));
+    fixture.originalPath = path.join(fixture.root, 'original.ts');
+    await fs.writeFile(fixture.originalPath, source);
+    const metrics = await compilerMetrics(fixture);
+    assert.deepEqual(metrics.map(metric => [metric.name, metric.coverage, metric.unverified]), [['method', 0, undefined], ['method', 1, undefined], ['hidden', 1, undefined], ['call', 1, undefined]], 'erased declaration modifiers preserve exact body-opening support');
+  } finally {
+    await fs.rm(compileRoot, { recursive: true, force: true });
+    if (fixture) await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('missing and ambiguous exact native declaration twins stay unverified', async () => {
+  const source = 'export function subject(): number { return 1; }\nsubject();\n';
+  const compileRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'native-tsc-'));
+  let fixture;
+  try {
+    fixture = await captureFixture(await nativeTscOutput(compileRoot, source));
+    fixture.originalPath = path.join(fixture.root, 'original.ts');
+    await fs.writeFile(fixture.originalPath, source);
+    const scripts = await readCoverage(fixture.coverageDirectory);
+    const original = await readOutput(fixture.originalPath, scripts, true, { projectRoot: fixture.root, analyzer });
+    const output = await readOutput(fixture.sourcePath, scripts, false, { projectRoot: fixture.root, analyzer });
+    const descriptor = original.descriptors[0];
+    const capture = output.captures[0];
+    assert.equal(functionCoverage(descriptor, [original, output]).coverage, 1, 'authentic exact native twin is measured before refusal controls');
+    const twins = capture.descriptors;
+    capture.descriptors = [];
+    assert.match(functionCoverage(descriptor, [original, output]).unverified, /missing or ambiguous source-map correspondence/, 'both exact start anchors missing refuses');
+    capture.descriptors = [...twins, ...twins];
+    assert.match(functionCoverage(descriptor, [original, output]).unverified, /missing or ambiguous source-map correspondence/, 'two exact native twins refuse');
+    capture.descriptors = twins.map(twin => ({ ...twin, end: twin.end - 1 }));
+    assert.match(functionCoverage(descriptor, [original, output]).unverified, /missing or ambiguous source-map correspondence/, 'exact declaration start cannot replace the required exact end');
   } finally {
     await fs.rm(compileRoot, { recursive: true, force: true });
     if (fixture) await fs.rm(fixture.root, { recursive: true, force: true });
