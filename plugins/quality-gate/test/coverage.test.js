@@ -312,13 +312,13 @@ test('CommonJS exported exact native starts refuse missing, shifted and duplicat
     const generated = await readOutput(fixture.sourcePath, scripts, false, { projectRoot: fixture.root, analyzer });
     const capture = generated.captures[0];
     const twins = capture.descriptors;
+    const metrics = await compilerMetrics(fixture);
+    assert.equal(metrics[0].coverage, 1, 'outer denominator excludes the uncovered nested tail');
+    assert.ok(metrics[1].coverage > 0 && metrics[1].coverage < 1, 'inner denominator independently retains its uncovered tail');
     assert.equal(toOriginal(twins[0].runtimeStart, 1), null, 'erased CommonJS export has no byte-matched runtime-start anchor');
     assert.equal(toOriginal(twins[0].bodyStart), null, 'typed return has no body-start anchor');
     assert.equal(toOriginal.exactDeclarationStart(twins[0].start), original.descriptors[0].start, 'authentic compiler segment binds the whole source AST declaration start');
     assert.equal(toOriginal.exactDeclarationStart(twins[0].start + 1), null, 'nearest segment never owns a shifted declaration start');
-    const metrics = await compilerMetrics(fixture);
-    assert.equal(metrics[0].coverage, 1, 'outer denominator excludes the uncovered nested tail');
-    assert.ok(metrics[1].coverage > 0 && metrics[1].coverage < 1, 'inner denominator independently retains its uncovered tail');
     for (const invalid of [[], [...twins, ...twins], twins.map(twin => ({ ...twin, start: twin.start + 1 })), twins.map(twin => ({ ...twin, end: twin.end - 1 }))]) {
       capture.descriptors = invalid;
       assert.match(functionCoverage(original.descriptors[0], [original, generated]).unverified, /missing or ambiguous source-map correspondence/, 'missing, shifted, duplicate or wrong-end native declaration twins refuse');
