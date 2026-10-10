@@ -70,6 +70,27 @@ export async function createAnalyzer(projectRoot) {
     return pieces.join('') + text.slice(cursor, functionNode.end);
   }
   
+  function logicalOperatorBoundary(node) {
+    if (!ast.isBinaryExpression(node) || !SHORT_CIRCUIT_OPERATORS.has(node.operatorToken.kind)) return null;
+    return { kind: node.operatorToken.kind, start: node.operatorToken.getStart(), anchorStart: node.right.getStart(), anchorEnd: node.right.end };
+  }
+
+  function finallyBoundary(node) {
+    if (!ast.isTryStatement(node) || !node.finallyBlock) return null;
+    const token = ast.findPrecedingToken(node.getSourceFile(), node.finallyBlock.getStart());
+    if (token?.kind !== ast.SyntaxKind.FinallyKeyword) return null;
+    return { kind: token.kind, start: token.getStart(), anchorStart: node.finallyBlock.getStart(), anchorEnd: node.finallyBlock.end };
+  }
+
+  function runtimeBoundaries(functionNode) {
+    const boundaries = [];
+    forEachOwnNode(functionNode, (node) => {
+      const boundary = logicalOperatorBoundary(node) ?? finallyBoundary(node);
+      if (boundary) boundaries.push(boundary);
+    }, () => {});
+    return boundaries;
+  }
+
   function parserTransport(requested = process.env.CRAP_PARSER_TRANSPORT || 'sync') {
     const ParserApi = PARSER_TRANSPORTS[requested];
     if (!ParserApi) throw new Error(`Unknown TypeScript parser transport "${requested}"; use sync or async.`);
@@ -103,7 +124,7 @@ export async function createAnalyzer(projectRoot) {
           const identity = `${parentId}/${functionKind(node)}:${name}#${ordinal}`;
           const start = node.getStart();
           const end = node.end;
-          functions.push({ identity, parent: parentId, name, start, runtimeStart: runtimeStart(node, text), bodyStart: node.body.getStart(), end, line: sourceFile.getLineAndCharacterOfPosition(start).line + 1, complexity: cyclomaticComplexity(node), fingerprint: crypto.createHash('sha256').update(ownText(node, text)).digest('hex') });
+          functions.push({ identity, parent: parentId, name, start, runtimeStart: runtimeStart(node, text), bodyStart: node.body.getStart(), boundaries: runtimeBoundaries(node), end, line: sourceFile.getLineAndCharacterOfPosition(start).line + 1, complexity: cyclomaticComplexity(node), fingerprint: crypto.createHash('sha256').update(ownText(node, text)).digest('hex') });
           node.forEachChild((child) => visit(child, identity));
         } else node.forEachChild((child) => visit(child, parentId));
       }
@@ -263,6 +284,18 @@ function mappedSource(capture, source) {
   }
 }
 
+function runtimeBoundaryOffsets(original, generated, toOriginal) {
+  const pairs = generated.boundaries.flatMap((boundary) => {
+    const twins = original.boundaries.filter((candidate) => candidate.kind === boundary.kind && toOriginal(boundary.anchorStart, 1) === candidate.anchorStart && toOriginal(boundary.anchorEnd - 1, 1) === candidate.anchorEnd - 1);
+    return twins.length === 1 ? [{ generated: boundary.start, original: twins[0].start }] : [];
+  });
+  const offsets = new Map();
+  for (const twins of Map.groupBy(pairs, (pair) => pair.original).values()) {
+    if (twins.length === 1) offsets.set(twins[0].generated, twins[0].original);
+  }
+  return offsets;
+}
+
 // CommonJS can map an erased export prefix at the exact AST declaration start; typed returns can erase the body-start segment.
 function runtimeBodyRecords(descriptor, source, capture) {
   if (capture.unverified) return capture;
@@ -273,7 +306,8 @@ function runtimeBodyRecords(descriptor, source, capture) {
   const twin = twins[0];
   const records = capture.records.filter((record) => record.ranges[0]?.startOffset === twin.runtimeStart && record.ranges[0]?.endOffset === twin.end);
   if (records.length > 1) return { unverified: 'ambiguous exact runtime range for the owned function body' };
-  return { records, toOriginal };
+  const boundaries = runtimeBoundaryOffsets(descriptor, twin, toOriginal);
+  return { records, toOriginal: (offset, boundaryBytes) => toOriginal(offset, boundaryBytes) ?? boundaries.get(offset) ?? null };
 }
 
 // Compilers re-indent the whitespace before a closing token, so a block end that lands on it binds through the token itself.
@@ -291,7 +325,7 @@ function outputCoverage(descriptor, source, output) {
     if (!owned.records.length) continue;
     measured += 1;
     const mapped = remapRecords(owned.records, (offset, isEnd) => isEnd ? mappedEnd(offset, owned.toOriginal) : owned.toOriginal(offset));
-    if (!mapped.length) return { unverified: 'a runtime coverage boundary has no exact source-map correspondence' };
+    if (!mapped.length) return { unverified: 'a runtime coverage boundary has no exact source-map or unique owned AST correspondence' };
     intervals.push(...coverageIntervals(mapped[0].ranges));
   }
   return { intervals, measured };

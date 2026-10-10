@@ -328,3 +328,50 @@ test('CommonJS exported exact native starts refuse missing, shifted and duplicat
     if (fixture) await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
+
+
+for (const selected of [0, 1]) {
+test('native runtime boundary joins exact ' + ['logical operator', 'finally keyword'][selected] + ' inside its owned body', async () => {
+  const source = "export function logical(value: number): boolean {\n  return value > 0\n    && typeof value === 'number';\n}\nexport function cleanup(flag: boolean): number {\n  try {\n    try {\n      if (flag) throw 1;\n      return 2;\n    } catch {\n      return 3;\n    } finally {\n      void flag;\n    }\n  } catch {\n    return 4;\n  }\n}\nlogical(1); logical(0); cleanup(true); cleanup(false);\n";
+  const compileRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'native-tsc-'));
+  let fixture;
+  try {
+    const output = await nativeTscOutput(compileRoot, source, 'node16');
+    fixture = await captureFixture(output, 'cjs');
+    fixture.originalPath = path.join(fixture.root, 'original.ts');
+    await fs.writeFile(fixture.originalPath, source);
+    const scripts = await readCoverage(fixture.coverageDirectory);
+    const original = await readOutput(fixture.originalPath, scripts, true, { projectRoot: fixture.root, analyzer });
+    const generated = await readOutput(fixture.sourcePath, scripts, false, { projectRoot: fixture.root, analyzer });
+    const capture = generated.captures[0];
+    const data = JSON.parse(Buffer.from(output.match(/base64,([^\s]+)/)[1], 'base64').toString('utf8'));
+    const toOriginal = originalOffsetMapper({ data, lineLengths: output.split('\n').map(line => line.length) }, source, output);
+    const metrics = await compilerMetrics(fixture);
+    assert.equal(metrics[selected].unverified, undefined, ['logical operator requires authentic owned coverage', 'finally keyword requires authentic owned coverage'][selected]);
+    assert.equal(metrics[0].coverage, 1, 'multiline logical operator retains its complete owned UTF-16 denominator');
+    assert.equal(metrics[0].unverified, undefined, 'logical operator requires a unique exact owned operand join');
+    assert.equal(metrics[1].unverified, undefined, 'finally keyword requires a unique exact owned block join');
+    assert.ok(metrics[1].coverage > 0 && metrics[1].coverage < 1, 'uncalled outer catch retains genuinely uncovered owned text');
+    for (const [index, descriptor] of original.descriptors.entries()) {
+      const twin = capture.descriptors[index];
+      const boundary = twin.boundaries[0];
+      assert.equal(toOriginal(boundary.start, 1), null, 'native syntax token has no ordinary compiler byte correspondence');
+      assert.equal(toOriginal(boundary.anchorStart, 1), descriptor.boundaries[0].anchorStart, 'exact operand or block opening anchors the syntax');
+      assert.equal(toOriginal(boundary.anchorEnd - 1, 1), descriptor.boundaries[0].anchorEnd - 1, 'exact operand or block closing anchors the syntax');
+      for (const invalid of [[], [...twin.boundaries, ...twin.boundaries], twin.boundaries.map(entry => ({ ...entry, start: entry.start + 1 })), twin.boundaries.map(entry => ({ ...entry, anchorStart: entry.anchorStart + 1 })), capture.descriptors[1 - index].boundaries]) {
+        const saved = twin.boundaries;
+        twin.boundaries = invalid;
+        const result = functionCoverage(descriptor, [original, generated]);
+        assert.equal(result.coverage, undefined, 'missing, ambiguous, shifted or wrong-owner syntax cannot acquire coverage');
+        assert.match(result.unverified, /runtime coverage boundary/, 'invalid AST correspondence stays unverified');
+        twin.boundaries = saved;
+      }
+    }
+    await fs.writeFile(fixture.originalPath, source.replace('value > 0', 'value > 1'));
+    assert.ok((await compilerMetrics(fixture)).every(metric => metric.unverified), 'a mismatched embedded original cannot own either boundary');
+  } finally {
+    await fs.rm(compileRoot, { recursive: true, force: true });
+    if (fixture) await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+}
