@@ -170,7 +170,7 @@ export function originalOffsetMapper(cacheEntry, originalText, generatedText) {
   const sourceMap = new SourceMap(cacheEntry.data);
   const generatedStarts = lineStarts(cacheEntry.lineLengths);
   const originalStarts = lineStarts(originalText.split('\n').map((line) => line.length));
-  return (offset, boundaryBytes = 0) => {
+  const toOriginal = (offset, boundaryBytes = 0) => {
     const { line, column } = positionAt(generatedStarts, offset);
     const entry = sourceMap.findEntry(line, column);
     if (!Number.isInteger(entry.originalLine)) return null;
@@ -181,6 +181,14 @@ export function originalOffsetMapper(cacheEntry, originalText, generatedText) {
     if (generatedText.slice(generated, offset + boundaryBytes) !== originalText.slice(original, original + delta + boundaryBytes)) return null;
     return original + delta;
   };
+  toOriginal.exactDeclarationStart = (offset) => {
+    const { line, column } = positionAt(generatedStarts, offset);
+    const entry = sourceMap.findEntry(line, column);
+    if (!Number.isInteger(entry.originalLine)) return null;
+    if (entry.generatedLine !== line || entry.generatedColumn !== column) return null;
+    return originalStarts[entry.originalLine] + entry.originalColumn;
+  };
+  return toOriginal;
 }
 
 export function remapRecords(records, toOriginal) {
@@ -255,12 +263,12 @@ function mappedSource(capture, source) {
   }
 }
 
-// Native return annotations can erase the body-start segment; TypeScript-only modifiers can erase the declaration start.
+// CommonJS can map an erased export prefix at the exact AST declaration start; typed returns can erase the body-start segment.
 function runtimeBodyRecords(descriptor, source, capture) {
   if (capture.unverified) return capture;
   const toOriginal = mappedSource(capture, source);
   if (!toOriginal) return { unverified: `executed bytes differ from ${source.relativePath}; an authentic matching source map is required` };
-  const twins = capture.descriptors.filter((candidate) => (toOriginal(candidate.bodyStart) === descriptor.bodyStart || toOriginal(candidate.runtimeStart, 1) === descriptor.runtimeStart) && toOriginal(candidate.end - 1) === descriptor.end - 1);
+  const twins = capture.descriptors.filter((candidate) => (toOriginal(candidate.bodyStart) === descriptor.bodyStart || toOriginal(candidate.runtimeStart, 1) === descriptor.runtimeStart || toOriginal.exactDeclarationStart?.(candidate.start) === descriptor.start) && toOriginal(candidate.end - 1) === descriptor.end - 1);
   if (twins.length !== 1) return { unverified: 'missing or ambiguous source-map correspondence for the owned runtime body' };
   const twin = twins[0];
   const records = capture.records.filter((record) => record.ranges[0]?.startOffset === twin.runtimeStart && record.ranges[0]?.endOffset === twin.end);

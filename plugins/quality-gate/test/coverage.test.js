@@ -25,9 +25,9 @@ test('historical export getter cannot cover the idle production body', () => {
   assert.match(result.unverified, /executed|capture|source map/);
 });
 
-async function captureFixture(text) {
+async function captureFixture(text, extension = 'mjs') {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-v8-'));
-  const sourcePath = path.join(root, 'subject.mjs');
+  const sourcePath = path.join(root, `subject.${extension}`);
   const coverageDirectory = path.join(root, 'coverage');
   await fs.mkdir(coverageDirectory);
   assert.deepEqual(await fs.readdir(coverageDirectory), []);
@@ -131,10 +131,10 @@ test('authentic compiler maps bind minified nested bodies without naming or scal
   }
 });
 
-async function nativeTscOutput(compileRoot, source) {
+async function nativeTscOutput(compileRoot, source, module = 'esnext') {
   await fs.writeFile(path.join(compileRoot, 'original.ts'), source);
   const tsc = path.join(pluginRoot, 'node_modules/typescript/bin/tsc');
-  const compile = spawnSync(process.execPath, [tsc, 'original.ts', '--inlineSourceMap', '--inlineSources', '--target', 'es2022', '--module', 'esnext'], { cwd: compileRoot, encoding: 'utf8', timeout: 30000 });
+  const compile = spawnSync(process.execPath, [tsc, 'original.ts', '--inlineSourceMap', '--inlineSources', '--target', 'es2022', '--module', module], { cwd: compileRoot, encoding: 'utf8', timeout: 30000 });
   assert.equal(compile.status, 0, compile.stdout + compile.stderr);
   return fs.readFile(path.join(compileRoot, 'original.js'), 'utf8');
 }
@@ -268,5 +268,63 @@ test('an absent owned runtime record stays unverified rather than inheriting mod
     assert.match(nested.unverified, /no captured exact runtime range/);
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+for (const [declaration, invocation, expected] of [
+  ['export function outer(flag: boolean): number {\nfunction inner(): number {\n  if (flag) return 1;\n  return 2;\n}\nreturn inner();\n}', 'outer(true); outer(false);', [['outer', 1], ['inner', 1]]],
+  ['export default function outer(): { value: number } { return { value: 1 }; }', 'outer();', [['outer', 1]]],
+  ['export async function outer(): Promise<number> { return 1; }', 'outer();', [['outer', 1]]],
+  ['export function outer(): number { return 1; }', 'void 0;', [['outer', 0]]],
+]) {
+  test('CommonJS exported typed-return declaration: ' + declaration.split('\n')[0], async () => {
+    const source = declaration + '\n' + invocation + '\n';
+    const compileRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'native-tsc-'));
+    let fixture;
+    try {
+      const output = await nativeTscOutput(compileRoot, source, 'node16');
+      fixture = await captureFixture(output, 'cjs');
+      fixture.originalPath = path.join(fixture.root, 'original.ts');
+      await fs.writeFile(fixture.originalPath, source);
+      const metrics = await compilerMetrics(fixture);
+      assert.deepEqual(metrics.map(metric => [metric.name, metric.coverage]), expected, 'CommonJS exported typed-return bodies require exact native declaration ownership');
+      assert.ok(metrics.every(metric => !metric.unverified), 'all independent CommonJS bodies have authentic ownership');
+    } finally {
+      await fs.rm(compileRoot, { recursive: true, force: true });
+      if (fixture) await fs.rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
+
+test('CommonJS exported exact native starts refuse missing, shifted and duplicate AST twins', async () => {
+  const source = 'export function outer(flag: boolean): number {\nfunction inner(): number {\n  if (flag) return 1;\n  return 2;\n}\nreturn inner();\n}\nouter(true);\n';
+  const compileRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'native-tsc-'));
+  let fixture;
+  try {
+    const output = await nativeTscOutput(compileRoot, source, 'node16');
+    fixture = await captureFixture(output, 'cjs');
+    fixture.originalPath = path.join(fixture.root, 'original.ts');
+    await fs.writeFile(fixture.originalPath, source);
+    const data = JSON.parse(Buffer.from(output.match(/base64,([^\s]+)/)[1], 'base64').toString('utf8'));
+    const toOriginal = originalOffsetMapper({ data, lineLengths: output.split('\n').map(line => line.length) }, source, output);
+    const scripts = await readCoverage(fixture.coverageDirectory);
+    const original = await readOutput(fixture.originalPath, scripts, true, { projectRoot: fixture.root, analyzer });
+    const generated = await readOutput(fixture.sourcePath, scripts, false, { projectRoot: fixture.root, analyzer });
+    const capture = generated.captures[0];
+    const twins = capture.descriptors;
+    const metrics = await compilerMetrics(fixture);
+    assert.equal(metrics[0].coverage, 1, 'outer denominator excludes the uncovered nested tail');
+    assert.ok(metrics[1].coverage > 0 && metrics[1].coverage < 1, 'inner denominator independently retains its uncovered tail');
+    assert.equal(toOriginal(twins[0].runtimeStart, 1), null, 'erased CommonJS export has no byte-matched runtime-start anchor');
+    assert.equal(toOriginal(twins[0].bodyStart), null, 'typed return has no body-start anchor');
+    assert.equal(toOriginal.exactDeclarationStart(twins[0].start), original.descriptors[0].start, 'authentic compiler segment binds the whole source AST declaration start');
+    assert.equal(toOriginal.exactDeclarationStart(twins[0].start + 1), null, 'nearest segment never owns a shifted declaration start');
+    for (const invalid of [[], [...twins, ...twins], twins.map(twin => ({ ...twin, start: twin.start + 1 })), twins.map(twin => ({ ...twin, end: twin.end - 1 }))]) {
+      capture.descriptors = invalid;
+      assert.match(functionCoverage(original.descriptors[0], [original, generated]).unverified, /missing or ambiguous source-map correspondence/, 'missing, shifted, duplicate or wrong-end native declaration twins refuse');
+    }
+  } finally {
+    await fs.rm(compileRoot, { recursive: true, force: true });
+    if (fixture) await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
