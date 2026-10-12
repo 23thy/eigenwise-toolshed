@@ -94,7 +94,7 @@ Read-only files or changes warn before dispatch. Resolve or override.
 ## Open the dashboard
 
 `sidequest dashboard` starts the local server and prints the URL. Verify server changes in an isolated
-`SIDEQUEST_HOME` on a distinct port, never the shared board.
+`SIDEQUEST_HOME` on another port, never the shared board.
 
 ## File a ticket
 
@@ -103,8 +103,9 @@ Read-only files or changes warn before dispatch. Resolve or override.
 Use the fallback only when no category fits. `--complexity` is legacy ambiguity fallback;
 never set `--model`/`--effort`. Scope, anchors, stories and exact verify: `references/ticket-authoring.md`.
 
-Descriptions/comments render markdown. Use real newlines, never literal `\n`. Mid-task side issue? File
-it with `mcp__plugin_sidequest_board__add`, then keep going. Filing a ticket is not a request to work it.
+Descriptions/comments render markdown with real newlines, never literal `
+`. File a mid-task side issue
+with `mcp__plugin_sidequest_board__add` and keep going; filing a ticket is not a request to work it.
 
 ## List / update / close
 
@@ -131,7 +132,7 @@ optionally `--status todo`).
   resume a prior executor and spawn a fresh one for the same ticket.
 - **Read the thread before working a ticket** (`sidequest comments <ref>`). Default reads retain all
   metadata; pass `--full` only for needed elided bodies.
-- **Claims release on observed death, not age**: use `pulse`, never a clock. For work needing a decision, `SendMessage` the same agent. If its name fails, only the ORIGINAL host session may send once to the authentic `dispatch.agentId` or exact Agent-returned identifier; never `claim.by` or a guessed address. Honor user Pause retries. Unverified identity preserves claim and work. A resume keeps claim, token-file path, and worktree binding. Only authentic activity counts; queued, unknown, completed, absent or failed-send is not death. Never restart terminal executors. Confirmed death needs salvage before replacement. Lost binding and died-before-claim recovery: `references/orchestration.md`.
+- **Claims release on observed death, not age**: use `pulse`, never a clock. For work needing a decision, `SendMessage` the same agent. If its name fails, only the ORIGINAL matching host session may send once to authentic `dispatch.agentId` or its exact original Agent-returned identifier; never `claim.by` or a guessed/replacement address. Honor user Pause retries. Missing/mismatched identity stays continuation UNVERIFIED; preserve claim/work. A resume keeps claim, token-file path, and worktree binding. Require authentic response/activity; queued/unknown/completed/absent/failed-send is not death. Never restart terminal executors. Confirmed death requires salvage before replacement. Lost binding and died-before-claim recovery, including preparing-session authority and deadlines: `references/orchestration.md`.
 - Agents report automatically. **Never use `TaskOutput`** for a Sidequest task ID or launch name. Liveness comes only from `pulse <ref>` and `changes --since`, read on a notification or user prompt, never right after spawning; a process list is never dispatch evidence. **No TaskStop after terminal evidence**: an executor ends its own run at submit, done, or release. `TaskStop({ task_id: "<agent name>" })` once is host cleanup only for one `pulse` still shows alive after its ticket went terminal (host action, not Sidequest). Never stop a live claim, retained continuation, or candidate awaiting integration; never wake a completed executor or build a cleanup loop. **Never proxy-wait** with a shell/`Monitor`/cron task for an executor or artifact (a one-shot local readiness watch is fine).
 
 **Repository publishing is the orchestrator's, alone.** Executors stop at verified local commits and
@@ -208,22 +209,20 @@ hand-pick either. Legacy complexity maps to bands at read time (1–3/4–6/7–
 ## Comments
 
 `comment SQ-3 -m` (durable handoff, keep working) · `comments SQ-3` (read the thread).
-**Comments are cross-actor handoffs, not diary entries**: decisions, constraints, ruled-out
-approaches, risks, exact verification command/result, concise findings — no progress narration.
-**Write findings back after an investigation** — root cause with evidence (`file:line`), the fix,
-verification.
+**Comments are cross-actor handoffs**: decisions, constraints, ruled-out approaches, risks, exact
+verification command/result, concise findings. **Write findings back after an investigation**: root
+cause with evidence (`file:line`), the fix, verification.
 
 ## Link tickets
 
-`sidequest link SQ-4 depends-on SQ-3` (stored on both sides) · `blocks` · `related`
-(non-blocking) · `unlink` removes. A ticket blocked by an unfinished one is skipped by `next` and
-excluded from `ready`.
+`sidequest link SQ-4 depends-on SQ-3` (stored on both sides) · `blocks` · `related` (non-blocking) ·
+`unlink` removes. A blocked ticket is skipped by `next` and excluded from `ready`.
 
 ## Guidelines
 
-**Act, then report** — run the command, tell the user the result (ref, status, or URL). **Keep
-titles tight**; detail goes in `-d`. **Don't invent tickets** — only file what the user raised.
-Reminders, stories, human assignment: `references/board-features.md`.
+**Act, then report** the result (ref, status, or URL). **Keep titles tight**; detail goes in `-d`.
+**Don't invent tickets**: only file what the user raised. Reminders, stories, human assignment:
+`references/board-features.md`.
 
 
 ## Frozen work provenance
