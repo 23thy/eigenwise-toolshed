@@ -41,7 +41,7 @@ var import_node_child_process = require("node:child_process");
 var import_node_fs = __toESM(require("node:fs"));
 var import_node_path = __toESM(require("node:path"));
 var import_commit_scope = require("../commit-scope");
-const WORK_KINDS = ["new-behavior", "behavior-preserving-refactor", "inherited-read-only"];
+const WORK_KINDS = ["new-behavior", "behavior-preserving-refactor", "inherited-read-only", "docs", "type-annotation-only", "fixture-only"];
 function requireFact(valid, reason) {
   if (!valid) throw new Error(`work provenance refused: ${reason}`);
 }

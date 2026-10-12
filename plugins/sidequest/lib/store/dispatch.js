@@ -76,7 +76,7 @@ function recordVerificationAmendment(ticket, amendment, previousRequirement, nex
 }
 function pinnedVerificationRequirement(ticket, projectPath, verifyEnvironment, sharedTree) {
   const requirement = preparedVerificationRequirement(ticket, projectPath);
-  const deferred = !sharedTree && verifyEnvironment === "shared" && ["command", "suite"].includes(requirement.kind);
+  const deferred = !sharedTree && verifyEnvironment === "shared" && ["command", "suite", "typecheck"].includes(requirement.kind);
   return deferred ? Object.freeze({ ...requirement, environment: "shared" }) : requirement;
 }
 function createDispatch(dependencies) {

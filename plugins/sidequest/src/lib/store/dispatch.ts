@@ -123,7 +123,7 @@ function recordVerificationAmendment(ticket: any, amendment: any, previousRequir
 // board left at the default pins nothing, so its requirements stay byte-identical.
 function pinnedVerificationRequirement(ticket: any, projectPath: string, verifyEnvironment: unknown, sharedTree: boolean) {
   const requirement = preparedVerificationRequirement(ticket, projectPath);
-  const deferred = !sharedTree && verifyEnvironment === 'shared' && ['command', 'suite'].includes(requirement.kind);
+  const deferred = !sharedTree && verifyEnvironment === 'shared' && ['command', 'suite', 'typecheck'].includes(requirement.kind);
   return deferred ? Object.freeze({ ...requirement, environment: 'shared' as const }) : requirement;
 }
 
