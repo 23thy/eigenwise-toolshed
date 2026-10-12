@@ -73,6 +73,8 @@ const { createRouting } = require('./store/routing.js');
 const { createTickets } = require('./store/tickets.js');
 const { createSubmissions } = require('./store/submissions.js');
 const { createDispatch } = require('./store/dispatch.js');
+import { ownedWorkPaths, provenanceAdmissionHold } from './store/work-provenance';
+import type { WorkProvenance } from './store/work-provenance';
 const { createPaths } = require('./store/paths.js');
 const { createCache } = require('./store/cache.js');
 const { createConfig } = require('./store/config.js');
@@ -1087,29 +1089,58 @@ function completionScope(slug?: any, ticket?: any) {
   return [...new Set([...executionScope(slug, ticket), ...relatedFragments])];
 }
 
-function completionTreeCheck(slug?: any, ticket?: any, opts?: any) {
+type ProvenanceCompletionTicket = { ref?: string; dispatch?: { workProvenance?: WorkProvenance } };
+type CompletionWorkFacts = { ok: true; applicable: false; unavailable?: boolean }
+  | { ok: false; reason: string; message: string }
+  | { ok: true; applicable: true; declaredFiles: string[]; changedPaths: string[]; ownedPaths: string[]; delta: unknown; provenance?: WorkProvenance };
+
+function completionWorkFacts(slug: string, ticket: ProvenanceCompletionTicket): CompletionWorkFacts {
   const state = dispatchState(ticket);
-  if (!state || state.readonly === true || state.nonRepoOutput === true) return { ok: true, applicable: false };
   const declaredFiles = completionScope(slug, ticket);
-  if (!declaredFiles.length) return { ok: true, applicable: false };
+  const eligible = [Boolean(state), state?.readonly !== true || Boolean(state?.workProvenance), state?.nonRepoOutput !== true, declaredFiles.length > 0];
+  if (!eligible.every(Boolean)) return { ok: true, applicable: false };
   const delta = dispatchDelta(slug, ticket);
   if (!delta.ok) return { ok: true, applicable: false, unavailable: true };
-  const changedPaths = Array.from(new Set([...delta.working, ...delta.committed]))
-    .filter((file: string) => commitScope.isInScope(file, declaredFiles))
-    .sort();
-  if (!changedPaths.length && opts?.explicitNoOp !== true) {
-    return {
+  const changedPaths: string[] = Array.from(new Set<string>([...delta.working, ...delta.committed]))
+    .filter(file => commitScope.isInScope(file, declaredFiles)).sort();
+  try {
+    const ownedPaths = ownedWorkPaths(delta.workspace.root, state.workProvenance, changedPaths, ref => getTicket(slug, ref));
+    return { ok: true, applicable: true, declaredFiles, changedPaths, ownedPaths, delta, provenance: state.workProvenance };
+  } catch (error) {
+    return { ok: false, reason: 'work_provenance_mismatch', message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function emptyScopeCompletion(ticket: { ref?: string }, declaredFiles: string[]) {
+  return {
       ok: false,
       reason: 'empty_declared_scope',
       declaredFiles,
       message: `${ticket.ref} completion refused: its declared write scope has an empty diff since dispatch base. Declared files: ${declaredFiles.join(', ')}. A claim holder may record factual failed_suite or could_not_run verification evidence before editing, but a successful completion, submit, or done still needs scoped work. If this run intentionally made no repository change, report [sidequest:verify-complete] no-op: <evidence>; verification outcomes use [sidequest:verify-complete] <passed|failed_suite|toolchain_missing|could_not_run|timeout|manual|attestation|skipped|failed_check>: <evidence>.`,
     };
-  }
-  if (changedPaths.some(isTestSidePath) && changedPaths.some((file: string) => !isTestSidePath(file))) {
-    const negativeControl = negativeControlResult(ticket, changedTestNames(delta, changedPaths));
-    if (negativeControl.kind !== 'failed' && negativeControl.kind !== 'waived') return negativeControlRefusal(ticket, negativeControl);
-  }
-  return { ok: true, applicable: true, changedPaths, noOp: !changedPaths.length };
+}
+
+function ownedControlCheck(ticket: ProvenanceCompletionTicket, delta: unknown, ownedPaths: string[]) {
+  if (ticket.dispatch?.workProvenance?.kind === 'behavior-preserving-refactor') return { ok: true };
+  const mixed = [ownedPaths.some(isTestSidePath), ownedPaths.some(file => !isTestSidePath(file))].every(Boolean);
+  if (!mixed) return { ok: true };
+  const control = negativeControlResult(ticket, changedTestNames(delta, ownedPaths));
+  return ['failed', 'waived'].includes(control.kind) ? { ok: true } : negativeControlRefusal(ticket, control);
+}
+
+function completionTreeCheck(slug: string, ticket: ProvenanceCompletionTicket, opts?: { explicitNoOp?: boolean }) {
+  const facts = completionWorkFacts(slug, ticket);
+  if (!facts.ok || !facts.applicable) return facts;
+  const emptyWithoutDeclaration = !facts.changedPaths.length && opts?.explicitNoOp !== true;
+  if (emptyWithoutDeclaration && facts.provenance?.kind !== 'inherited-read-only') return emptyScopeCompletion(ticket, facts.declaredFiles);
+  const control = ownedControlCheck(ticket, facts.delta, facts.ownedPaths);
+  if (!control.ok) return control;
+  return { ok: true, applicable: true, changedPaths: facts.changedPaths, ownedPaths: facts.ownedPaths,
+    noOp: !facts.changedPaths.length, workProvenance: facts.provenance };
+}
+
+function submissionCompletionTreeCheck(slug: string, ticket: ProvenanceCompletionTicket, opts?: { explicitNoOp?: boolean }) {
+  return provenanceAdmissionHold(ticket.dispatch?.workProvenance) || completionTreeCheck(slug, ticket, opts);
 }
 
 const {
@@ -1400,7 +1431,7 @@ const {
   boundedExcerptForSubmission: (...args: any[]) => boundedExcerpt(...args),
   claimReclaimable,
   commitScope,
-  completionTreeCheck,
+  completionTreeCheck: submissionCompletionTreeCheck,
   coerceStatus,
   createComment,
   crypto,
@@ -1965,8 +1996,9 @@ function lifecycleBaseline(slug: any, ticket: any, purpose: 'dispatch' | 'wave' 
 }
 
 function recordLifecycleAttempt(ticket: any, attempt: any) {
-  ticket.lifecycleAttempt = attempt;
-  if (ticket.dispatch) ticket.dispatch.lifecycleAttempt = attempt;
+  const recorded = { ...attempt, workProvenance: ticket.dispatch?.workProvenance };
+  ticket.lifecycleAttempt = recorded;
+  if (ticket.dispatch) ticket.dispatch.lifecycleAttempt = recorded;
 }
 
 type ObservedLifecycleBaseline = { preparedAt: string; baseline: ReturnType<typeof lifecycleBaseline> } | null;

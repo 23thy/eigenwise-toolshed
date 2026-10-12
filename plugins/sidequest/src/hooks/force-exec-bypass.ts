@@ -457,6 +457,10 @@ const CLOSEOUT_UPDATE_FIELDS = new Set([
 ]);
 
 const MAIN_THREAD_MUTATIONS: Record<string, { matches: (input: Record<string, unknown>) => boolean; denial: string }> = {
+  mcp__plugin_sidequest_board__dispatch: {
+    matches: (input) => Object.hasOwn(input, 'workProvenance'),
+    denial: 'sidequest: subagents cannot declare work provenance. Ask the main thread to freeze source-bound factual provenance before dispatch; actor labels and shared session ids grant nothing.',
+  },
   mcp__plugin_sidequest_board__update: {
     matches: (input) => Array.from(CLOSEOUT_UPDATE_FIELDS).some((field) => Object.hasOwn(input, field)),
     denial: 'sidequest: subagents cannot update closeout fields or admit a composition through MCP. Use scopeRequest for files, or ask the orchestrator to set closeout fields or use update.admitComposition from the main thread.',

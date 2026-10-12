@@ -458,3 +458,18 @@ The correction appends an audit and comment, preserves the original verdict, com
 Optional, if Sidequest saves you time: [Ko-fi](https://ko-fi.com/eigenwise) or [GitHub Sponsors](https://github.com/sponsors/Eigenwise).
 
 See the [generated Sidequest reference](../../reference/sidequest/) for agent-facing tool and configuration details, or the [Sidequest plugin README](https://github.com/Eigenwise/eigenwise-toolshed/tree/main/plugins/sidequest) for the project landing page.
+
+
+## Declare inherited work before execution
+
+The main Claude thread can freeze `dispatch.workProvenance` as `new-behavior`,
+`behavior-preserving-refactor`, or `inherited-read-only`. Sources name an exact native producer
+generation and its immutable owned commit. Sidequest records the source/test bytes and any
+existing capture's candidate, command and nonce. Changed bytes or generations refuse. Workers
+cannot grant this authority to themselves, and a declaration cannot change a running dispatch.
+
+Unchanged inherited tests and declared GREEN refactors don't need fabricated historical reds.
+New owned behavior still needs its own controls. This declaration proves provenance only; its
+execution, quality and admission stay **UNVERIFIED**, and submission stays held. Keep a factual
+checkpoint and release the preparation with its commit and range. A released preparation stays
+unaccepted and cannot replace a pending submission in the existing composition flow.
