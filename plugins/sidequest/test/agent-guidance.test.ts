@@ -81,7 +81,7 @@ test('SQ-2731: the negative-control grammar an executor is told matches the guar
   assert.doesNotMatch(executorTemplate, /an ImportError or collection error only proves a symbol vanished/);
 });
 
-test('sidequest listing description leads with the board default and leaves inline exceptions to the body', () => {
+test('sidequest listing description allows bounded inline fixes alongside delegated work', () => {
   const frontmatter = skill.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   assert.ok(frontmatter, 'skill frontmatter must be present');
   const frontmatterLines = frontmatter[1].split(/\r?\n/);
@@ -95,10 +95,10 @@ test('sidequest listing description leads with the board default and leaves inli
   const description = descriptionLines.join(' ');
   assert.ok(description.length > 0, 'skill description must not be empty');
   assert.ok(description.length <= 1536, `skill description is ${description.length} characters`);
-  assert.match(description, /^Default for multi-file or multi-step work, even where there is no board yet/);
+  assert.match(description, /^Use for delegated work and board lifecycle; small bounded fixes may stay inline without a ticket/);
   assert.match(description, /\bUse for\b/);
-  assert.doesNotMatch(description, /\bStay inline for\b/, 'inline guidance lives in the skill body, not the listing');
-  assert.match(skill, /Answer direct questions; do operational requests and stated one-line edits to 1–2 named files inline/);
+  assert.match(skill, /Answer direct questions and operational requests inline/);
+  assert.match(skill, /Small bounded fixes in a few known files may stay inline without tickets/);
 });
 
 test('external tracker guidance keeps authored GitHub communication self-contained', () => {
@@ -126,6 +126,9 @@ test('operating guidance uses live taxonomy and consistent recon boundaries', ()
     assert.doesNotMatch(source, /`docs-writing`|`security-audit`/);
   }
   for (const source of [skill, userStory, orchestration]) {
+    assert.match(source, /Read-only investigations may use native Explore or general-purpose agents without tickets/);
+  }
+  for (const source of [userStory, orchestration]) {
     assert.match(source, /bounded recon.*named anchors/i);
     assert.match(source, /unfamiliar[\s\S]{0,80}deep investigation/i);
   }
@@ -443,7 +446,9 @@ test('all twelve executors discover optional gates without a shipped quality man
     assert.equal(fs.readFileSync(path.join(ROOT, 'agents', filename), 'utf8'), source, filename);
     assert.match(source, /configured quality gate when the briefing names one/);
     assert.match(source, /unmeasured bodies stay unmeasured, no averages/);
-    assert.match(source, /no quality gate is\s+configured for this project; Quartermaster setup can add one/);
+    assert.match(source, /run the repository's documented quality command/);
+    assert.match(source, /complexity\/coverage UNVERIFIED: <exact reason from the tool>/);
+    assert.doesNotMatch(source, /Quartermaster setup can add one/);
     assert.match(source, /Absence alone never holds,\s+parks or marks work UNVERIFIED/);
     assert.doesNotMatch(source, /strictly below (?:CRAP )?\d|must score CRAP|coverage (?:of |>=? )?\d+%/);
   }
