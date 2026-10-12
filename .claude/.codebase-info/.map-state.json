@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "tool": "codebase-mapper",
   "version": "2.15.10",
-  "mappedAt": "2026-10-10",
-  "gitCommit": "3e30d02fc3a63e3068b49b1b3d0e1462272d1e09",
+  "mappedAt": "2026-10-12",
+  "gitCommit": "115a8411cbd5e6f03e832956e15e18281ca587b2",
   "documents": [
     "architecture.md",
     "coding-style.md",

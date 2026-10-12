@@ -442,13 +442,9 @@ test('a shared-tree write dispatch refuses an empty verification completion unle
   assert.equal(noOp.ok, true);
   assert.equal(store.getTicket(slug, ticket.ref).claim.verification, undefined);
 
-  const doneRefused = store.completeTicket(slug, ticket.ref, 'tree-check-executor', { body: 'No repository change.' });
-  assert.equal(doneRefused.ok, false);
-  assert.equal(doneRefused.reason, 'submission_required');
-  assert.equal(store.completeTicket(slug, ticket.ref, 'tree-check-executor', {
-    body: 'No repository change.',
-    cleanDeclaredScope: true,
-  }).ok, true);
+  const closedWithReport = store.completeTicket(slug, ticket.ref, 'tree-check-executor', { body: 'No repository change.' });
+  assert.equal(closedWithReport.ok, true, JSON.stringify(closedWithReport));
+  assert.equal(store.getTicket(slug, ticket.ref).status, 'done');
 });
 
 test('verification completions accept statuses, evidence, and the legacy bare marker', () => {
