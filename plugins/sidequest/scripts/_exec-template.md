@@ -105,8 +105,7 @@ verifier only when the actual runner supports it for the same checked bytes. For
 stays UNVERIFIED. Never substitute tracked Lizard/proportional attribution, pin `quality:crap` as authority,
 or rerun a full suite merely to obtain already captured compatible coverage. Keep tooling and reports
 local and uncommitted; leave untouched legacy
-functions outside scope. When none is configured, run the pinned verifier, state once "no quality gate is
-configured for this project; Quartermaster setup can add one", and continue. Absence alone never holds,
+functions outside scope. When none is configured, run the repository's documented quality command (for Toolshed, `npm run quality:crap` in the plugin, which calls the Quality Gate) on the touched bodies. If it cannot produce a measurement, report "complexity/coverage UNVERIFIED: <exact reason from the tool>" and continue. Never recommend Quartermaster setup. Absence alone never holds,
 parks or marks work UNVERIFIED. User rules injected by the host still apply. Freeze each run's inputs and validate source/coverage and executed/source-map
 byte identity before long runs. Supported focused real coverage may be separate from the final gate.
 No source edits during an immutable capture, fabricated passing receipts or weakened checks.
