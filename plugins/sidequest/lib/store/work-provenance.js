@@ -92,10 +92,23 @@ function sourceCommits(root, generation, input) {
   git(root, ["merge-base", "--is-ancestor", generation.baseCommit, input.commit]);
   return git(root, ["rev-list", "--reverse", `${generation.baseCommit}..${input.commit}`]).toString().trim().split(/\r?\n/).filter(Boolean);
 }
+function requireSourceFacts(generation, input) {
+  const fields = [
+    "baseCommit",
+    "declaredFiles",
+    ...generation.outcome === "released" ? ["sanctionedCommits"] : [],
+    ...input.captureId ? ["verificationRequirement", "tokenPrefix"] : []
+  ];
+  for (const field of fields) {
+    requireFact(generation[field] != null, `producer generation ${input.preparedAt} missing ${field}`);
+  }
+}
 function sourceGeneration(producer, input) {
-  const generation = producer.dispatch;
-  requireFact(generation !== void 0, "producer has no native generation");
-  requireFact(generation.preparedAt === input.preparedAt && Boolean(generation.terminalAt), "producer generation mismatch");
+  const dispatch = producer.dispatch;
+  requireFact(dispatch !== void 0, "producer has no native generation");
+  const generation = [dispatch, ...(dispatch.attempts ?? []).slice().reverse()].find((candidate) => candidate.preparedAt === input.preparedAt);
+  requireFact(generation !== void 0 && Boolean(generation.terminalAt), "producer generation mismatch");
+  requireSourceFacts(generation, input);
   requireFact(!producer.claim?.by && !producer.dispatchNonce, "producer is still active");
   requireFact(["released", "submitted"].includes(generation.outcome), "producer must be released preparation or submitted source");
   return generation;

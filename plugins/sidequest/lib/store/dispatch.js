@@ -805,6 +805,10 @@ function createDispatch(dependencies) {
       // agentId. Review provenance needs to tell those apart.
       bindSource: state.bindSource || null,
       preparedAt: state.preparedAt || null,
+      baseCommit: state.baseCommit,
+      declaredFiles: structuredClone(state.declaredFiles),
+      sanctionedCommits: structuredClone(state.sanctionedCommits),
+      verificationRequirement: structuredClone(state.verificationRequirement),
       launchedAt: state.launchedAt || null,
       boundAt: state.boundAt || null,
       claimedAt: state.claimedAt || null,
@@ -1741,7 +1745,7 @@ function createDispatch(dependencies) {
   }
   function priorAttemptHistory(current) {
     return {
-      attempts: Array.isArray(current?.attempts) ? current.attempts.slice() : [],
+      attempts: Array.isArray(current?.attempts) ? structuredClone(current.attempts) : [],
       supersededTokens: Array.isArray(current?.supersededTokens) ? current.supersededTokens.slice() : []
     };
   }

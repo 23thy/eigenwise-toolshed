@@ -16,7 +16,7 @@ type ProducerDispatch = Readonly<{
 }>;
 export type ProvenanceProducer = Readonly<{
   id: string; ref: string; claim?: { by?: string } | null; dispatchNonce?: string | null;
-  dispatch?: ProducerDispatch;
+  dispatch?: ProducerDispatch & { attempts?: readonly ProducerDispatch[] };
   submission?: { commit: string; base: string; commits: readonly string[]; admittedScope: readonly string[] } | null;
   verificationCaptures?: readonly CompletedVerificationCapture[];
 }>;
@@ -79,10 +79,20 @@ function sourceCommits(root: string, generation: ProducerDispatch, input: Source
   git(root, ['merge-base', '--is-ancestor', generation.baseCommit, input.commit]);
   return git(root, ['rev-list', '--reverse', `${generation.baseCommit}..${input.commit}`]).toString().trim().split(/\r?\n/).filter(Boolean);
 }
+function requireSourceFacts(generation: ProducerDispatch, input: SourceOriginInput): void {
+  const fields: readonly (keyof ProducerDispatch)[] = ['baseCommit', 'declaredFiles',
+    ...(generation.outcome === 'released' ? ['sanctionedCommits'] as const : []),
+    ...(input.captureId ? ['verificationRequirement', 'tokenPrefix'] as const : [])];
+  for (const field of fields) {
+    requireFact(generation[field] != null, `producer generation ${input.preparedAt} missing ${field}`);
+  }
+}
 function sourceGeneration(producer: ProvenanceProducer, input: SourceOriginInput): ProducerDispatch {
-  const generation = producer.dispatch;
-  requireFact(generation !== undefined, 'producer has no native generation');
-  requireFact(generation.preparedAt === input.preparedAt && Boolean(generation.terminalAt), 'producer generation mismatch');
+  const dispatch = producer.dispatch;
+  requireFact(dispatch !== undefined, 'producer has no native generation');
+  const generation = [dispatch, ...(dispatch.attempts ?? []).slice().reverse()].find(candidate => candidate.preparedAt === input.preparedAt);
+  requireFact(generation !== undefined && Boolean(generation.terminalAt), 'producer generation mismatch');
+  requireSourceFacts(generation, input);
   requireFact(!producer.claim?.by && !producer.dispatchNonce, 'producer is still active');
   requireFact(['released', 'submitted'].includes(generation.outcome), 'producer must be released preparation or submitted source');
   return generation;

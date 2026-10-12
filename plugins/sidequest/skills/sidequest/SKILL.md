@@ -229,8 +229,7 @@ Reminders, stories, human assignment: `references/board-features.md`.
 
 Only the main thread can set MCP `dispatch.workProvenance` before preparation. Its `kind` is
 `new-behavior`, `behavior-preserving-refactor`, or `inherited-read-only`. Each source names a
-native producer ref, exact `preparedAt` generation and immutable owned `commit`, with an optional
-existing `captureId`. The board freezes its base, scope, source/test byte identities and capture
+native producer ref, exact `preparedAt` from the current dispatch or archived attempts and immutable owned `commit`, with an optional existing `captureId`; legacy archived generations missing required retained facts refuse by generation and fact name. The board freezes its base, scope, source/test byte identities and capture
 candidate/command/nonce. A released native preparation stays explicitly unaccepted; it never
 becomes a submitted source. Submitted-source composition requirements are unchanged.
 
