@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -28,7 +29,7 @@ function cli(root, argumentsList = [], cwd = root) {
 }
 
 async function fixture(context, files = { 'source.ts': 'export function subject(value: number) { return value; }\n' }) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'quality-gate-crap-'));
+  const root = realpathSync.native(await fs.mkdtemp(path.join(os.tmpdir(), 'quality-gate-crap-')));
   context.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const [file, text] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
