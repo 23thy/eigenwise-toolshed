@@ -321,7 +321,7 @@ test('last readonly executor overrides a writable category during done closeout'
   assert.strictEqual(done.ticket.submission == null, true);
 });
 
-test('shared-tree done ignores unrelated dirty files after scoped work is committed', () => {
+test('shared-tree done requires submission for committed scope without blaming unrelated dirty files', () => {
   const scoped = '.claude/.codebase-info/committed.md';
   const bystander = 'caller-dirt.txt';
   const created = store.createTicket(slug, {
@@ -339,8 +339,9 @@ test('shared-tree done ignores unrelated dirty files after scoped work is commit
 
   const done = store.completeTicket(slug, created.ref, 'committed-worker', { source: 'mcp' });
 
-  assert.strictEqual(done.ok, true);
-  assert.strictEqual(done.ticket.status, 'done');
+  assert.strictEqual(done.ok, false);
+  assert.strictEqual(done.reason, 'submission_required');
+  assert.strictEqual(done.ticket.status, 'doing');
   assert.strictEqual(done.unscopedPaths, undefined);
   assert.doesNotMatch(JSON.stringify(done), new RegExp(bystander));
 });
@@ -822,13 +823,14 @@ test('ordinary scoped dispatches still require commit and submit', () => {
   const prepared = store.prepareDispatch(slug, created.ref, { sharedTree: true });
   assert.strictEqual(prepared.ticket.dispatch.readonly, false);
   assert.strictEqual(claim(prepared, 'ordinary-worker').ok, true);
+  writeProjectFile('.claude/.codebase-info/ordinary.md', 'repository change\n');
 
   const done = store.completeTicket(slug, created.ref, 'ordinary-worker', { source: 'mcp' });
 
   assert.strictEqual(done.ok, false);
   assert.strictEqual(done.reason, 'submission_required');
-  assert.match(done.message, /read-only dispatch may close with done/i);
-  assert.match(done.message, /workingTreeDelivery:true/);
+  assert.match(done.message, /Commit and submit verified changes/);
+  assert.match(done.message, /no commit, no dirty declared path, and no pending submission may close with done/);
   assert.strictEqual(store.getTicket(slug, created.ref).claim.by, 'ordinary-worker');
 });
 
@@ -844,12 +846,13 @@ test('readonly:false selects the submission-required write path', () => {
   const prepared = store.prepareDispatch(slug, created.ref, { sharedTree: true });
   assert.strictEqual(prepared.ticket.dispatch.readonly, false);
   assert.strictEqual(claim(prepared, 'readonly-override-worker').ok, true);
+  writeProjectFile('.claude/.codebase-info/mutable.md', 'repository change\n');
 
   const done = store.completeTicket(slug, created.ref, 'readonly-override-worker', { source: 'mcp' });
 
   assert.strictEqual(done.ok, false);
   assert.strictEqual(done.reason, 'submission_required');
-  assert.match(done.message, /readonly:false selects this write path/i);
+  assert.match(done.message, /has repository changes/);
 });
 
 test('readonly category external output may dispatch and close with done', () => {
@@ -921,6 +924,7 @@ test('marker text cannot grant artifact authority to a category or scope', () =>
   const categoryDispatch = store.prepareDispatch(slug, arbitraryCategory.ref, { sharedTree: true });
   assert.strictEqual(categoryDispatch.ticket.dispatch.artifactMode, false);
   assert.strictEqual(claim(categoryDispatch, 'arbitrary-category-worker').ok, true);
+  writeProjectFile('.claude/.codebase-info/arbitrary.md', 'repository change\n');
   assert.strictEqual(store.completeTicket(slug, arbitraryCategory.ref, 'spoofed-groomer', { source: 'control-plane-grooming' }).reason, 'submission_required');
 
   const arbitraryScope = store.createTicket(slug, {
@@ -933,6 +937,7 @@ test('marker text cannot grant artifact authority to a category or scope', () =>
   const scopeDispatch = store.prepareDispatch(slug, arbitraryScope.ref, { sharedTree: true });
   assert.strictEqual(scopeDispatch.ticket.dispatch.artifactMode, false);
   assert.strictEqual(claim(scopeDispatch, 'arbitrary-scope-worker').ok, true);
+  writeProjectFile('src/arbitrary.txt', 'repository change\n');
   assert.strictEqual(store.completeTicket(slug, arbitraryScope.ref, 'arbitrary-scope-worker', { source: 'mcp' }).reason, 'submission_required');
 });
 
@@ -1072,6 +1077,7 @@ test('tool-surface contract leaves arbitrary in-process store access out of scop
   });
   const ordinaryDispatch = store.prepareDispatch(slug, ordinary.ref, { sharedTree: true, sessionId: preparingSessionId });
   assert.strictEqual(claim(ordinaryDispatch, 'ordinary-mutation-worker').ok, true);
+  writeProjectFile('.claude/.codebase-info/ordinary-mutation.md', 'repository change\n');
   const ordinaryPatch = {
     description: store.SHARED_TREE_ARTIFACT_MARKER,
     files: [],
