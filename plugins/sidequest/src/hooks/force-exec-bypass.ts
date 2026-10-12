@@ -3,9 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isRecord, readStdin, stringField, type HookInput } from './shared/input.js';
-import { writeContext, writeDeny, writeToolUpdate } from './shared/output.js';
+import { writeDeny, writeToolUpdate } from './shared/output.js';
 import { runtimeModule } from './shared/paths.js';
-import { readSessionState, sessionStateFile, writeSessionState, type SessionState } from './shared/session-state.js';
+import { readSessionState, sessionStateFile, writeSessionState } from './shared/session-state.js';
 // Dependency-free, so bundling it keeps launch naming identical in the hook and
 // in the store even when the installed lib is mid-upgrade.
 import { canonicalExecutorName, dispatchLaunchName, DIAGNOSTIC_PROBE_NAME, isReadOnlyExecutor } from '../lib/exec-names.js';
@@ -16,7 +16,7 @@ import { checkSidequestInstall, installRefusalMessage } from '../lib/dispatch-pr
 const { canonicalPath } = require(path.join(__dirname, '..', 'lib', 'worktrees.js')) as { canonicalPath: (value: unknown) => string };
 const { isInScope: scopeMatch } = require(path.join(__dirname, '..', 'lib', 'scope-match.js')) as { isInScope: (file: unknown, files: unknown) => boolean };
 
-const PASS_THROUGH_AGENT_TYPES = new Set(['Explore', 'claude-code-guide', 'statusline-setup']);
+const PASS_THROUGH_AGENT_TYPES = new Set(['Explore', 'claude-code-guide', 'Plan', 'statusline-setup']);
 const EXECUTOR_HELPER_TYPES = new Set(['Explore', 'claude-code-guide', 'web-researcher', 'general-purpose']);
 const HELPER_REVIEW_WORK_RE = /\b(?:audits?|auditors?|auditing|audited|reviews?|reviewers?|reviewing|reviewed|review-audit)\b/i;
 
@@ -241,8 +241,17 @@ function sidequestTypeDenyReason(type: string, classification: ExecutorClassific
 }
 
 function genericAgentDenyReason(type: string): string {
-  return `sidequest: ${type || 'custom'} is a generic Agent, not a Sidequest ticket executor. ` +
-    'For a tiny lookup, use Read, Glob, Grep, or WebFetch inline, not WebSearch. A usable route needs a fresh Board MCP dispatch and its exact returned executor. Board MCP is the lifecycle authority: reload or reconnect Sidequest, then re-dispatch. Do not use a raw Agent or Sidequest CLI fallback. Any delegated work, including a quick investigation, needs a ticket: file a spike (usually codebase-exploration), route it, dispatch it, then spawn the returned executor. The blocked work still gates any dependent action: do not proceed to a PR, merge, publish, or ship until its ticket is filed, dispatched, and closed; rerouting around this block is a violation.';
+  return `sidequest: ${type || 'custom'} requests write or ticket work without a prepared dispatch. Use a native read-only agent for lookups, or dispatch the ticket and spawn its returned executor for writes.`;
+}
+
+function hasWriteIntent(toolInput: Record<string, unknown>): boolean {
+  const work = `${String(toolInput.prompt ?? '')}\n${String(toolInput.description ?? '')}`;
+  const instructions = work.replace(/\b(?:do not|don't|never|without)\s+(?:edit(?:ing)?|modify(?:ing)?|writ(?:e|ing)|implement(?:ing)?|chang(?:e|ing)|creat(?:e|ing)|delet(?:e|ing)|remov(?:e|ing)|commit(?:ting)?|push(?:ing)?|install(?:ing)?)\b/gi, '');
+  return /(?:^|[.!?:;\n]|\b(?:and|then|please|must|should|to))\s*(?:edit(?:s|ing|ed)?|modif(?:y|ies|ying|ied)|writ(?:e|es|ing)|implement(?:s|ing|ed)?|chang(?:e|es|ing|ed)|creat(?:e|es|ing|ed)|delet(?:e|es|ing|ed)|remov(?:e|es|ing|ed)|commit(?:s|ting|ted)?|push(?:es|ing|ed)?|install(?:s|ing|ed)?|update|refactor|patch|rewrite)\b/i.test(instructions);
+}
+
+function namesTicketWork(toolInput: Record<string, unknown>): boolean {
+  return /\bSQ-\d+\b|\[sidequest-route\b/i.test(`${String(toolInput.prompt ?? '')}\n${String(toolInput.description ?? '')}\n${String(toolInput.name ?? '')}`);
 }
 
 // Dispatch refuses a project with no Sidequest install, and /mcp cannot fix that, so the install goes first (GH-158).
@@ -280,19 +289,13 @@ function agentDenyReason(input: HookInput, type: string, classification: Executo
   return missingInstallDenyReason(input, type) || boardMcpDownReason(input) || genericAgentDenyReason(type);
 }
 
-// Explore needs no prepared dispatch, so it is the open door next to every generic-Agent deny: a live
-// session relaunched a denied general-purpose job as Explore and fanned four of them out on the session
-// model (SQ-2214). On a routed board this guard closes that door. Denied generic work is remembered per
-// session and refused when it comes back as Explore, and fan-out past the free spawns without any board
-// interaction is refused toward a spike ticket. Subagent callers never reach this guard: their Explore
-// spawns take the rewriteExecutorHelper path first, so executors' helpers stay untouched.
-const EXPLORE_FREE_SPAWNS = 2;
 const DENIED_WORK_PROMPT_PREFIX_CHARS = 160;
 const DENIED_WORK_MAX_RECORDS = 20;
 
 interface DeniedWorkRecord {
   description: string;
   promptPrefix: string;
+  writeIntent?: boolean;
 }
 
 function guardSessionId(input: HookInput): string {
@@ -315,7 +318,8 @@ function deniedWorkPromptPrefix(toolInput: Record<string, unknown>): string {
 function deniedWorkRecords(state: Record<string, unknown>): DeniedWorkRecord[] {
   if (!Array.isArray(state.deniedWork)) return [];
   return state.deniedWork.filter((record): record is DeniedWorkRecord =>
-    isRecord(record) && typeof record.description === 'string' && typeof record.promptPrefix === 'string');
+    isRecord(record) && typeof record.description === 'string' && typeof record.promptPrefix === 'string')
+    .filter((record) => record.writeIntent === true || hasWriteIntent({ prompt: record.promptPrefix, description: record.description }));
 }
 
 function recordDeniedGenericWork(input: HookInput, toolInput: Record<string, unknown>): void {
@@ -325,7 +329,7 @@ function recordDeniedGenericWork(input: HookInput, toolInput: Record<string, unk
     const file = sessionStateFile('explore-fanout', sessionId);
     const state = readSessionState(file);
     const records = deniedWorkRecords(state);
-    records.push({ description: normalizedWork(toolInput.description), promptPrefix: deniedWorkPromptPrefix(toolInput) });
+    records.push({ description: normalizedWork(toolInput.description), promptPrefix: deniedWorkPromptPrefix(toolInput), writeIntent: true });
     state.deniedWork = records.slice(-DENIED_WORK_MAX_RECORDS);
     writeSessionState(file, state);
   } catch (_) {
@@ -341,40 +345,26 @@ function matchesDeniedWork(records: DeniedWorkRecord[], toolInput: Record<string
     || (record.promptPrefix !== '' && record.promptPrefix === promptPrefix));
 }
 
-// The inline-work nudge clears boardInteraction on each new prompt; the Explore cap stays lifted for the whole session.
-function boardTouchedThisSession(sessionId: string): boolean {
-  const inlineWork = readSessionState(sessionStateFile('inline-work', sessionId));
-  return Boolean(inlineWork.boardInteraction || inlineWork.boardTouchedEarlier);
-}
-
-function exploreDenial(sessionId: string, state: SessionState, toolInput: Record<string, unknown>, priorPasses: number): string {
-  if (matchesDeniedWork(deniedWorkRecords(state), toolInput)) {
-    return 'sidequest: this Explore spawn matches work a generic Agent was already denied for. The block applied to the work, not the agent type. File a spike ticket (usually codebase-exploration), route it, dispatch it, then spawn the returned executor; rerouting denied work through Explore is a violation.';
-  }
-  if (priorPasses < EXPLORE_FREE_SPAWNS || boardTouchedThisSession(sessionId)) return '';
-  return `sidequest: Explore spawn ${priorPasses + 1} this session with no board interaction. Explore inherits the session model; investigation at this scale belongs on the board, where a codebase-exploration spike runs a cheaper route. File the spike, route it, dispatch it, then spawn the returned executor.`;
-}
-
-function guardMainSessionExplore(input: HookInput, toolInput: Record<string, unknown>): void {
+function guardDeniedWrite(input: HookInput, toolInput: Record<string, unknown>): boolean {
   const sessionId = guardSessionId(input);
-  if (!sessionId || dispatchAdmission(input).status !== 'routed') return;
-  const file = sessionStateFile('explore-fanout', sessionId);
-  const state = readSessionState(file);
-  const priorPasses = Number(state.explorePasses) || 0;
-  const denial = exploreDenial(sessionId, state, toolInput, priorPasses);
-  if (denial) {
-    writeDeny('PreToolUse', denial);
-    return;
-  }
-  recordExplorePass(file, state, priorPasses);
+  if (!sessionId) return false;
+  const state = readSessionState(sessionStateFile('explore-fanout', sessionId));
+  if (!matchesDeniedWork(deniedWorkRecords(state), toolInput)) return false;
+  writeDeny('PreToolUse', 'sidequest: this spawn resumes denied write work without a prepared dispatch. Use a native read-only agent for separate lookups, or dispatch the write ticket and spawn its returned executor.');
+  return true;
 }
 
-function recordExplorePass(file: string, state: SessionState, priorPasses: number): void {
-  state.explorePasses = priorPasses + 1;
-  writeSessionState(file, state);
-  if (priorPasses < EXPLORE_FREE_SPAWNS) {
-    writeContext('PreToolUse', 'sidequest: Explore is for quick evidence sweeps and inherits the session model. Deep or fan-out investigation belongs on the board: file a spike ticket (usually codebase-exploration), route it, dispatch it, and spawn the returned executor on its cheaper route.');
+function guardNativeAgent(input: HookInput, toolInput: Record<string, unknown>, type: string): boolean {
+  if (namesTicketWork(toolInput)) {
+    writeDeny('PreToolUse', genericAgentDenyReason(type));
+    return true;
   }
+  if (guardDeniedWrite(input, toolInput)) return true;
+  if (PASS_THROUGH_AGENT_TYPES.has(type)) return false;
+  if (!hasWriteIntent(toolInput)) return false;
+  recordDeniedGenericWork(input, toolInput);
+  writeDeny('PreToolUse', agentDenyReason(input, type, { kind: 'unknown', effort: null }));
+  return true;
 }
 
 const REF_RE = /\bSQ-\d+\b/gi;
@@ -1101,12 +1091,9 @@ function decidedBeforeAgentAdmission(input: HookInput): boolean {
 }
 
 function decidedForHelperOrPassThroughAgent({ input, toolInput, type, classification }: AgentSpawnRequest): boolean {
-  if (isSubagentCaller(input) && !isCurrentExecutor(classification)) {
-    rewriteExecutorHelper(input, toolInput, type);
-    return true;
-  }
-  if (!PASS_THROUGH_AGENT_TYPES.has(type)) return false;
-  if (type === 'Explore') guardMainSessionExplore(input, toolInput);
+  if (classification.kind !== 'unknown' || type.startsWith('sidequest-')) return false;
+  if (guardNativeAgent(input, toolInput, type)) return true;
+  if (isSubagentCaller(input)) rewriteExecutorHelper(input, toolInput, type);
   return true;
 }
 
@@ -1162,9 +1149,8 @@ function refusedPreparedDispatch(request: AgentSpawnRequest, dispatchValidation:
   return refusedPreparedDispatchSpawn(request, dispatchValidation.spawn);
 }
 
-function refusedGenericAgent({ input, toolInput, type, classification }: AgentSpawnRequest, admission: DispatchAdmission): boolean {
+function refusedGenericAgent({ input, type, classification }: AgentSpawnRequest): boolean {
   if (isCurrentExecutor(classification)) return false;
-  if (!type.startsWith('sidequest-') && admission.status === 'routed') recordDeniedGenericWork(input, toolInput);
   writeDeny('PreToolUse', agentDenyReason(input, type, classification));
   return true;
 }
@@ -1173,7 +1159,7 @@ function routedExecutorSpawn(request: AgentSpawnRequest): AdmittedExecutorSpawn 
   const admission = dispatchAdmission(request.input);
   if (refusedForMissingExecutorRoute(request.type, request.classification, admission)) return null;
   const dispatchValidation = preparedDispatchValidation(request.input);
-  if (refusedPreparedDispatch(request, dispatchValidation) || refusedGenericAgent(request, admission) || refusedSubagentModelOverride()) return null;
+  if (refusedPreparedDispatch(request, dispatchValidation) || refusedGenericAgent(request) || refusedSubagentModelOverride()) return null;
   return { ...request, admission, preparedSpawn: dispatchValidation.spawn };
 }
 
