@@ -316,6 +316,7 @@
           "enum": [
             "suite",
             "command",
+            "typecheck",
             "document",
             "link",
             "schema",
@@ -501,6 +502,7 @@
           "enum": [
             "suite",
             "command",
+            "typecheck",
             "document",
             "link",
             "schema",
@@ -1802,7 +1804,10 @@
               "enum": [
                 "new-behavior",
                 "behavior-preserving-refactor",
-                "inherited-read-only"
+                "inherited-read-only",
+                "docs",
+                "type-annotation-only",
+                "fixture-only"
               ]
             },
             "sources": {

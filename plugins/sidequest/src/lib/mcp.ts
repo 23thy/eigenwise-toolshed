@@ -74,7 +74,8 @@ const DEFAULT_PROTOCOL_VERSION = '2025-06-18';
 // enum plus 168 for the served description, since compactSchema strips the authored one. Measured at 24797
 // payload bytes on the W1 tree, so the 2.5KB reserve holds.
 // Raised from 27300 for dispatch.workProvenance (SQ-3630): measured payload 25325 bytes, all added schema structure since compactSchema strips the authored description. Keeps the 2.5KB reserve.
-const MCP_TOOLS_LIST_MAX_BYTES = 27850;
+// Raised from 27850 for add/update verifyKind typecheck (SQ-3644): +44 bytes of enum structure, measured 25394 payload bytes. Keeps the 2.5KB reserve.
+const MCP_TOOLS_LIST_MAX_BYTES = 27900;
 const MCP_TOOLS_LIST_HEADROOM_BYTES = 2500;
 
 function serverVersion() {

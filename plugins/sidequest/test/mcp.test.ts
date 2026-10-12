@@ -3325,7 +3325,7 @@ test('MCP submit reports every independently fixable completion refusal together
   ]);
   const refusalMessages = refused.failures.map((failure: any) => failure.message).join('\n');
   assert.match(refusalMessages, /Write the fragment, then commit it, then submit again\./);
-  assert.match(refusalMessages, /has not recorded a negative control/);
+  assert.match(refusalMessages, /needs a claim-holder negative control/);
   assert.match(refusalMessages, /must match the declared executor verify command/);
 });
 
