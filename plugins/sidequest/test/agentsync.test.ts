@@ -1333,6 +1333,9 @@ test('working-tree briefings split capture and typed-evidence closeout', () => {
   }, 'working-tree-command-token');
   assert.match(command, /Run the pinned verify-capture wrapper/);
   assert.match(command, /done\.verify cannot replace that capture/);
+  assert.match(command, /returned as ignoredDirtyPaths, never a scope refusal/);
+  assert.match(command, /warning naming the sibling, without refusing your closeout/);
+  assert.match(command, /Your own committed paths, empty deliverable, or failed candidate verification still refuse/);
   assert.doesNotMatch(command, /done --verify "<typed evidence>"/);
 
   const document = agentsync.renderTicketBriefing({

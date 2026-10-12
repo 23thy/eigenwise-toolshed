@@ -114,7 +114,7 @@ gate covers the newer target content. An assembly refusal leaves every submitted
   attestation there can only be a mistake, so it is refused rather than dropped. The record keeps `contentEvidence`
   `delivery_revision_contains_candidate`, or `:operator_resolved` when anything was attested, plus a
   `contentProof` listing the identical, reverse-applied, deleted, and operator-resolved paths.
-- When a working-tree delivery cannot record its initial dirty baseline, it still dispatches without an inherited-path exemption, so every dirty path is attributed to the executor at closeout.
+- Working-tree closeout attributes only declared paths and the ticket's own release fragment, even when the initial dirty baseline is unavailable. Outside-scope dirt is recorded on completion and returned as `ignoredDirtyPaths`; completed sibling drift is returned and recorded as a warning naming the sibling. Neither refuses this ticket. Own committed paths, an empty deliverable, and failed own-candidate verification still refuse. Preserve other work without reverting, absorbing, or committing it.
 
 ### Overlapping candidates with different pinned verifiers
 
