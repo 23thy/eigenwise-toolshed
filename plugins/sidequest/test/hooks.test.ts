@@ -2387,7 +2387,7 @@ test('hook manifest routes force-exec-bypass for every live-claim mutation rule 
   const command = 'node hooks/force-exec-bypass.js';
   for (const toolName of toolNames) {
     assert.ok(routesForceExecBypass(preToolUse, toolName), `${toolName} has an authority rule but no force-exec-bypass.js route`);
-    for (const matcher of ['*', toolNames.join('|'), 'mcp__plugin_sidequest_board__(?:update|remove|verdict)']) {
+    for (const matcher of ['*', toolNames.join('|'), 'mcp__plugin_sidequest_board__(?:dispatch|update|remove|verdict)']) {
       assert.ok(routesForceExecBypass([{ matcher, hooks: [{ command }] }], toolName), `${matcher} must route ${toolName}`);
     }
     assert.equal(routesForceExecBypass([{ matcher: `${toolName}_other`, hooks: [{ command }] }], toolName), false, 'a different tool must not route');
