@@ -1698,8 +1698,9 @@ async function nativeProvenanceProducer() {
   const candidate = git(['rev-parse', 'HEAD']);
   const capture = await nativeProvenanceVerification(producer);
   assert.equal(capture.capture.status, 'passed');
-  assert.match(capture.capture.outputTail, /owned value equals two/);
-  assert.match(capture.capture.outputTail, /# pass 1/);
+  const verifierOutput = fs.readFileSync(capture.capture.logPath, 'utf8');
+  assert.match(verifierOutput, /owned value equals two/);
+  assert.match(verifierOutput, /# pass 1/);
   assert.equal(capture.recorded.ok, true, JSON.stringify(capture.recorded));
   assert.equal(store.releaseTicket(slug, producer.ref, producer.ref + '-producer', { status: 'todo', kind: 'handback', reason: 'Synthetic unmeasured preparation', source: 'mcp' }).ok, true);
   const released = store.getTicket(slug, producer.ref);
