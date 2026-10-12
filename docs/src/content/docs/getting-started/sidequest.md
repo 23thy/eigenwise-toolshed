@@ -413,6 +413,8 @@ Ask Claude to set `deniedTools` on the board (`board_config`) or on one category
 
 **Verification fails before any edit.** The active claim holder can record `[sidequest:verify-complete] failed: <evidence>` or `[sidequest:verify-complete] could_not_run: <evidence>` before touching the repository. That preserves the failure report only. A passing completion, submit, or done still needs the declared scoped work and required verification.
 
+**You want to keep GREEN or held work without claiming it passed.** An executor can use the advisory `checkpoint` (`ref`, `by`, a `commit` or `worktree`, `verify`, and an optional TTL of 1 to 1440 minutes) plus an ordinary factual comment. It records the scoped preparation and leaves controls, coverage, CRAP and admission unresolved. It is not a final verification receipt, accepted source, admission, delivery or adoption, and it needs a live claim. A passing `[sidequest:verify-complete]`, submit or done still goes through the full completion gate.
+
 **A delivered ticket's verify command no longer runs.** Ask Claude to record a passing replacement verifier; Sidequest keeps the original requirement and its evidence on the ticket alongside the replacement.
 
 **A submitted ticket is not integrated.** Ask Claude to inspect the submission and complete the review and integration step. Do not start the same ticket again while a submitted result is waiting.
