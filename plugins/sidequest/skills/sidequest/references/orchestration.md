@@ -73,7 +73,7 @@ codebase inline.
 
 ### Shared working-tree deliveries
 
-A live sibling allocation is excluded only when both shared-tree working-tree dispatches record the same nonempty preparing session, their claims overlap, and their scopes are disjoint. Before dirty-path classification, Sidequest validates every eligible completed sibling's recorded candidate against its recorded paths and current content. A mismatch refuses closeout: preserve the shared-tree work and hand it back to the existing parent for verification or grooming. Do not revert it or expand scope to absorb it.
+Working-tree closeout owns only the ticket's declared paths and its own release fragment. Outside-scope dirty paths are recorded on completion and returned as `ignoredDirtyPaths`, including sibling and parent work. Eligible completed siblings are still checked against their recorded candidates; drift produces a `warnings` entry naming the sibling and does not refuse this ticket. Preserve those paths and report drift to the parent for verification or grooming. Own committed paths, an empty deliverable, or failed own-candidate verification still refuse closeout. Never revert or commit someone else's paths.
 
 Before dispatching a wave, ask: “What will every ticket in this wave need to change that none of them owns?” For each shared file or seam, pin its shape in the story execution contract before dispatch, or file one prerequisite ticket that the wave depends on. Do not reformat regions you did not functionally change in shared files; a prettier pass over a file three peers are editing can turn five-line changes into unmergeable successors.
 
