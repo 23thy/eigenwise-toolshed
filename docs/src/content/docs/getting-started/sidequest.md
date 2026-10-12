@@ -242,6 +242,8 @@ Settings covers routing profiles, model fallback, theme, notification preference
 
 ## Daily use
 
+The shipped coding profile defaults to `medium` effort for `coding.hard`, `debugging`, `spike-investigation`, and `review-audit`. Their models are unchanged, and board-local routing overrides keep their configured values. The effective category route controls dispatch, including provider-specific fallbacks.
+
 Ask Claude to do the board work in plain language:
 
 - `Show me the Sidequest backlog for this project.`
