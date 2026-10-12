@@ -1,4 +1,5 @@
 "use strict";
+var import_work_provenance = require("./store/work-provenance");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -1115,27 +1116,54 @@ function completionScope(slug, ticket) {
   }) : [];
   return [.../* @__PURE__ */ new Set([...executionScope(slug, ticket), ...relatedFragments])];
 }
-function completionTreeCheck(slug, ticket, opts) {
+function completionWorkFacts(slug, ticket) {
   const state = dispatchState(ticket);
-  if (!state || state.readonly === true || state.nonRepoOutput === true) return { ok: true, applicable: false };
   const declaredFiles = completionScope(slug, ticket);
-  if (!declaredFiles.length) return { ok: true, applicable: false };
+  const eligible = [Boolean(state), state?.readonly !== true || Boolean(state?.workProvenance), state?.nonRepoOutput !== true, declaredFiles.length > 0];
+  if (!eligible.every(Boolean)) return { ok: true, applicable: false };
   const delta = dispatchDelta(slug, ticket);
   if (!delta.ok) return { ok: true, applicable: false, unavailable: true };
   const changedPaths = Array.from(/* @__PURE__ */ new Set([...delta.working, ...delta.committed])).filter((file) => commitScope.isInScope(file, declaredFiles)).sort();
-  if (!changedPaths.length && opts?.explicitNoOp !== true) {
-    return {
-      ok: false,
-      reason: "empty_declared_scope",
-      declaredFiles,
-      message: `${ticket.ref} completion refused: its declared write scope has an empty diff since dispatch base. Declared files: ${declaredFiles.join(", ")}. A claim holder may record factual failed_suite or could_not_run verification evidence before editing, but a successful completion, submit, or done still needs scoped work. If this run intentionally made no repository change, report [sidequest:verify-complete] no-op: <evidence>; verification outcomes use [sidequest:verify-complete] <passed|failed_suite|toolchain_missing|could_not_run|timeout|manual|attestation|skipped|failed_check>: <evidence>.`
-    };
+  try {
+    const ownedPaths = (0, import_work_provenance.ownedWorkPaths)(delta.workspace.root, state.workProvenance, changedPaths, (ref) => getTicket(slug, ref));
+    return { ok: true, applicable: true, declaredFiles, changedPaths, ownedPaths, delta, provenance: state.workProvenance };
+  } catch (error) {
+    return { ok: false, reason: "work_provenance_mismatch", message: error instanceof Error ? error.message : String(error) };
   }
-  if (changedPaths.some(isTestSidePath) && changedPaths.some((file) => !isTestSidePath(file))) {
-    const negativeControl = negativeControlResult(ticket, changedTestNames(delta, changedPaths));
-    if (negativeControl.kind !== "failed" && negativeControl.kind !== "waived") return negativeControlRefusal(ticket, negativeControl);
-  }
-  return { ok: true, applicable: true, changedPaths, noOp: !changedPaths.length };
+}
+function emptyScopeCompletion(ticket, declaredFiles) {
+  return {
+    ok: false,
+    reason: "empty_declared_scope",
+    declaredFiles,
+    message: `${ticket.ref} completion refused: its declared write scope has an empty diff since dispatch base. Declared files: ${declaredFiles.join(", ")}. A claim holder may record factual failed_suite or could_not_run verification evidence before editing, but a successful completion, submit, or done still needs scoped work. If this run intentionally made no repository change, report [sidequest:verify-complete] no-op: <evidence>; verification outcomes use [sidequest:verify-complete] <passed|failed_suite|toolchain_missing|could_not_run|timeout|manual|attestation|skipped|failed_check>: <evidence>.`
+  };
+}
+function ownedControlCheck(ticket, delta, ownedPaths) {
+  if (ticket.dispatch?.workProvenance?.kind === "behavior-preserving-refactor") return { ok: true };
+  const mixed = [ownedPaths.some(isTestSidePath), ownedPaths.some((file) => !isTestSidePath(file))].every(Boolean);
+  if (!mixed) return { ok: true };
+  const control = negativeControlResult(ticket, changedTestNames(delta, ownedPaths));
+  return ["failed", "waived"].includes(control.kind) ? { ok: true } : negativeControlRefusal(ticket, control);
+}
+function completionTreeCheck(slug, ticket, opts) {
+  const facts = completionWorkFacts(slug, ticket);
+  if (!facts.ok || !facts.applicable) return facts;
+  const emptyWithoutDeclaration = !facts.changedPaths.length && opts?.explicitNoOp !== true;
+  if (emptyWithoutDeclaration && facts.provenance?.kind !== "inherited-read-only") return emptyScopeCompletion(ticket, facts.declaredFiles);
+  const control = ownedControlCheck(ticket, facts.delta, facts.ownedPaths);
+  if (!control.ok) return control;
+  return {
+    ok: true,
+    applicable: true,
+    changedPaths: facts.changedPaths,
+    ownedPaths: facts.ownedPaths,
+    noOp: !facts.changedPaths.length,
+    workProvenance: facts.provenance
+  };
+}
+function submissionCompletionTreeCheck(slug, ticket, opts) {
+  return (0, import_work_provenance.provenanceAdmissionHold)(ticket.dispatch?.workProvenance) || completionTreeCheck(slug, ticket, opts);
 }
 const {
   DEFAULT_CLAIM_ABANDON_MIN,
@@ -1427,7 +1455,7 @@ const {
   boundedExcerptForSubmission: (...args) => boundedExcerpt(...args),
   claimReclaimable,
   commitScope,
-  completionTreeCheck,
+  completionTreeCheck: submissionCompletionTreeCheck,
   coerceStatus,
   createComment,
   crypto,
@@ -1880,8 +1908,9 @@ function lifecycleBaseline(slug, ticket, purpose) {
   return Object.freeze({ revision, purpose });
 }
 function recordLifecycleAttempt(ticket, attempt) {
-  ticket.lifecycleAttempt = attempt;
-  if (ticket.dispatch) ticket.dispatch.lifecycleAttempt = attempt;
+  const recorded = { ...attempt, workProvenance: ticket.dispatch?.workProvenance };
+  ticket.lifecycleAttempt = recorded;
+  if (ticket.dispatch) ticket.dispatch.lifecycleAttempt = recorded;
 }
 function observeLifecycleBaseline(slug, ticket) {
   if ((ticket.lifecycleAttempt || ticket.dispatch?.lifecycleAttempt)?.baseline) return null;

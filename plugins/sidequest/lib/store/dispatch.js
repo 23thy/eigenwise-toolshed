@@ -1,4 +1,5 @@
 "use strict";
+var import_work_provenance = require("./work-provenance");
 const { canonicalPreparedDispatchExecutor, normalizePreparedDispatch } = require("../prepared-dispatch.js");
 const { classifyVerificationKind, verificationRequirement } = require("../kernel/verification.js");
 const { resolveSuite } = require("../suite-resolver.js");
@@ -2149,8 +2150,12 @@ function createDispatch(dependencies) {
     };
   }
   function preparedDispatchRecord(slug, t, current, plan, opts, preflight) {
+    const provenance = preparationProvenanceFields(plan, opts, preflight.preparedCompatibility);
+    const workProvenance = (0, import_work_provenance.prepareWorkProvenance)(preflight.projectPath, opts.workProvenance, String(opts.sessionId || ""), (ref) => getTicket(slug, ref));
     return {
-      ...preparationProvenanceFields(plan, opts, preflight.preparedCompatibility),
+      ...provenance,
+      lifecycleAttempt: { ...provenance.lifecycleAttempt, workProvenance },
+      workProvenance,
       ...checkoutPlacementFields(plan, preflight, opts),
       declaredFiles: plan.artifact.declaredFiles,
       boardAddedFiles: plan.artifact.boardAddedFiles,
@@ -2251,7 +2256,13 @@ function createDispatch(dependencies) {
       throw error;
     }
   }
-  function prepareDispatch(slug, idOrRef, opts) {
+  function prepareDispatch(slug, idOrRef, opts = {}, grant = {}) {
+    const current = getTicket(slug, idOrRef)?.dispatch;
+    (0, import_work_provenance.authorizeWorkDeclaration)(opts.workProvenance, opts.sessionId, grant.allowWorkProvenance === true, Boolean(current && !current.terminalAt));
+    const declaration = opts.workProvenance === void 0 ? void 0 : (0, import_work_provenance.workDeclaration)(opts.workProvenance);
+    return prepareDispatchRequest(slug, idOrRef, { ...opts, workProvenance: declaration });
+  }
+  function prepareDispatchRequest(slug, idOrRef, opts) {
     opts = opts || {};
     if (opts.retireOnly === true) return retireUnboundDispatchOnly(slug, idOrRef, opts);
     const { projectPath, found } = dispatchableTicket(slug, idOrRef, opts);

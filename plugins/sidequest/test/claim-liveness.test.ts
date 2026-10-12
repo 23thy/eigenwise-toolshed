@@ -1636,3 +1636,148 @@ test('activity at the same instant as the stop resumes the dispatch and pulse do
   assert.notEqual(pulse.liveness, 'dead');
   assert.equal(store.claimReleaseVerdict(resumed), null);
 });
+
+
+const provenanceFiles = ['lib/provenance.js', 'test/provenance.test.js'];
+const provenanceCommand = 'node --test test/provenance.test.js';
+
+function provenanceTicket(title: string) {
+  return store.createTicket(slug, { title, category: 'coding.normal', files: provenanceFiles,
+    description: 'Where: native provenance fixture. Contract: preserve source ownership and explicit unverified holds. Verify: exercise native completion.',
+    executorVerify: provenanceCommand, executorVerifyKind: 'command', source: 'mcp' });
+}
+
+async function provenanceBoardTool(name: string, argumentsList: Record<string, unknown>) {
+  const previousDirectory = process.cwd();
+  process.chdir(PROJECT_DIR);
+  try {
+    const mcp = require('../lib/mcp.js');
+    const response = await mcp.handleRequest({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { project: PROJECT_DIR, ...argumentsList } } });
+    assert.equal(response.result.isError, undefined, response.result.content[0].text);
+    return JSON.parse(response.result.content[0].text);
+  } finally {
+    process.chdir(previousDirectory);
+  }
+}
+
+async function claimProvenance(ticket: { ref: string }, kind: string, sources: readonly Record<string, unknown>[] = []) {
+  const sessionId = ticket.ref + '-provenance-main';
+  const previousSession = process.env.CLAUDE_CODE_SESSION_ID;
+  process.env.CLAUDE_CODE_SESSION_ID = sessionId;
+  try {
+    await provenanceBoardTool('dispatch', { ref: ticket.ref, sharedTree: true, workProvenance: { kind, sources } });
+  } finally {
+    if (previousSession === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+    else process.env.CLAUDE_CODE_SESSION_ID = previousSession;
+  }
+  const prepared = store.getTicket(slug, ticket.ref);
+  assert.equal(store.recordDispatchLaunch(slug, ticket.ref, { token: prepared.dispatchNonce, executor: prepared.dispatchExecutor,
+    sessionId, agentName: prepared.dispatch.launchName, source: 'test' }).ok, true);
+  assert.equal(store.claimTicket(slug, ticket.ref, ticket.ref + '-owner', { token: prepared.dispatchNonce,
+    executor: prepared.dispatchExecutor, sessionId, source: 'mcp' }).ok, true);
+  return store.getTicket(slug, ticket.ref);
+}
+
+async function nativeProvenanceProducer() {
+  const producer = provenanceTicket('source provenance native released preparation');
+  claimRouted(producer, producer.ref + '-producer');
+  fs.writeFileSync(path.join(PROJECT_DIR, provenanceFiles[0]), `module.exports = [2, '${producer.ref}'][0];\n`);
+  fs.writeFileSync(path.join(PROJECT_DIR, provenanceFiles[1]), "const test = require('node:test'); const assert = require('node:assert/strict'); test('owned value equals two', () => assert.equal(require('../lib/provenance'), 2));\n");
+  const committed = await provenanceBoardTool('commit', { ref: producer.ref, by: producer.ref + '-producer', worktree: PROJECT_DIR, message: 'Native provenance fixture' });
+  assert.equal(committed.ok, true, JSON.stringify(committed));
+  const candidate = git(['rev-parse', 'HEAD']);
+  const capture = await require('../lib/verify-capture.js').runCapturedVerification(provenanceCommand, { project: PROJECT_DIR, ticket: producer.ref }, PROJECT_DIR);
+  assert.equal(capture.capture.status, 'passed');
+  assert.equal(capture.recorded.ok, true, JSON.stringify(capture.recorded));
+  assert.equal(store.releaseTicket(slug, producer.ref, producer.ref + '-producer', { status: 'todo', kind: 'handback', reason: 'Synthetic unmeasured preparation', source: 'mcp' }).ok, true);
+  const released = store.getTicket(slug, producer.ref);
+  return { ref: producer.ref, preparedAt: released.dispatch.preparedAt, commit: candidate, captureId: capture.recorded.capture.id };
+}
+
+function provenanceCompletion(ticket: { ref: string }) {
+  return store.addComment(slug, ticket.ref, { by: ticket.ref + '-owner', body: '[sidequest:verify-complete] passed: owned value equals two passed; provenance execution and quality remain UNVERIFIED.', source: 'mcp' });
+}
+
+function releaseProvenance(ticket: { ref: string }) {
+  assert.equal(store.releaseTicket(slug, ticket.ref, ticket.ref + '-owner', { status: 'todo', kind: 'handback', reason: 'Fixture provenance remains unverified', source: 'mcp' }).ok, true);
+}
+
+test('source provenance accepts unchanged tests from genuine released native preparation without inventing a red', async () => {
+  const origin = await nativeProvenanceProducer();
+  const ticket = await claimProvenance(provenanceTicket('source provenance unchanged inherited tests'), 'inherited-read-only', [origin]);
+  assert.equal(ticket.dispatch.workProvenance.sources[0].status, 'preparation-unaccepted');
+  assert.equal(ticket.lifecycleAttempt.workProvenance.execution, 'UNVERIFIED');
+  assert.equal(ticket.dispatch.workProvenance.quality, 'UNVERIFIED');
+  assert.equal(provenanceCompletion(ticket).ok, true);
+  assert.equal(require('../lib/store/work-provenance.js').provenanceAdmissionHold(ticket.dispatch.workProvenance).reason, 'work_provenance_unverified');
+  assert.equal(store.getTicket(slug, origin.ref).submission, undefined);
+  releaseProvenance(ticket);
+});
+
+test('source provenance refuses changed source/test bytes and changed native producer generations', async () => {
+  const origin = await nativeProvenanceProducer();
+  const ticket = await claimProvenance(provenanceTicket('source provenance exact byte and generation binding'), 'inherited-read-only', [origin]);
+  const location = path.join(PROJECT_DIR, provenanceFiles[0]);
+  const exact = fs.readFileSync(location);
+  fs.writeFileSync(location, 'module.exports = 1;\n');
+  const defective = require('node:child_process').spawnSync(process.execPath, ['--test', provenanceFiles[1]], { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10_000 });
+  assert.equal(defective.status, 1);
+  assert.match(defective.stdout, /ERR_ASSERTION/);
+  assert.match(defective.stdout, /owned value equals two/);
+  assert.equal(provenanceCompletion(ticket).reason, 'work_provenance_mismatch');
+  fs.writeFileSync(location, exact);
+  assert.deepEqual(fs.readFileSync(location), exact);
+  assert.equal(provenanceCompletion(ticket).ok, true);
+  store.prepareDispatch(slug, origin.ref, { sharedTree: true, sessionId: origin.ref + '-fresh-main' });
+  assert.equal(provenanceCompletion(ticket).reason, 'work_provenance_mismatch');
+  releaseProvenance(ticket);
+});
+
+test('source provenance distinguishes GREEN behavior-preserving refactors from new behavior requiring an owned red', async () => {
+  const refactor = await claimProvenance(provenanceTicket('source provenance declared GREEN refactor'), 'behavior-preserving-refactor');
+  fs.writeFileSync(path.join(PROJECT_DIR, provenanceFiles[0]), 'module.exports = 1 + 1;\n');
+  fs.appendFileSync(path.join(PROJECT_DIR, provenanceFiles[1]), 'test("refactored value stays two", () => assert.equal(require("../lib/provenance"), 2));\n');
+  execFileSync(process.execPath, ['--test', provenanceFiles[1]], { cwd: PROJECT_DIR, stdio: 'pipe', timeout: 10_000 });
+  assert.equal(provenanceCompletion(refactor).ok, true);
+  releaseProvenance(refactor);
+  git(['add', ...provenanceFiles]);
+  git(['commit', '-m', 'Green refactor fixture']);
+  const behavior = await claimProvenance(provenanceTicket('source provenance new behavior retains red requirement'), 'new-behavior');
+  fs.writeFileSync(path.join(PROJECT_DIR, provenanceFiles[0]), 'module.exports = 3;\n');
+  fs.writeFileSync(path.join(PROJECT_DIR, provenanceFiles[1]), "const test = require('node:test'); const assert = require('node:assert/strict'); test('owned value equals three', () => assert.equal(require('../lib/provenance'), 3));\n");
+  assert.equal(provenanceCompletion(behavior).reason, 'negative_control_required');
+  const exact = fs.readFileSync(path.join(PROJECT_DIR, provenanceFiles[0]));
+  fs.writeFileSync(path.join(PROJECT_DIR, provenanceFiles[0]), 'module.exports = 2;\n');
+  const defective = require('node:child_process').spawnSync(process.execPath, ['--test', provenanceFiles[1]], { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10_000 });
+  assert.equal(defective.status, 1);
+  assert.match(defective.stdout, /ERR_ASSERTION/);
+  assert.match(defective.stdout, /owned value equals three/);
+  fs.writeFileSync(path.join(PROJECT_DIR, provenanceFiles[0]), exact);
+  assert.deepEqual(fs.readFileSync(path.join(PROJECT_DIR, provenanceFiles[0])), exact);
+  assert.equal(store.addComment(slug, behavior.ref, { by: behavior.ref + '-owner', body: '[sidequest:negative-control] target=lib/provenance.js; assertion=owned value equals three; node --test test/provenance.test.js failed=1 failure-kind=assertion\n[sidequest:negative-control-test] failed owned value equals three', source: 'mcp' }).ok, true);
+  assert.equal(provenanceCompletion(behavior).ok, true);
+  releaseProvenance(behavior);
+  git(['add', ...provenanceFiles]);
+  git(['commit', '-m', 'New behavior control fixture']);
+});
+
+test('source provenance refuses actor self-grants and retroactive declaration without modifying the generation', async () => {
+  const ticket = provenanceTicket('source provenance authority cannot be supplied by an actor');
+  assert.throws(() => store.prepareDispatch(slug, ticket.ref, { sharedTree: true, sessionId: 'worker-main-label', allowWorkProvenance: true,
+    workProvenance: { kind: 'inherited-read-only', sources: [] } }), /main-thread MCP grant/);
+  const claimed = await claimProvenance(ticket, 'inherited-read-only');
+  const before = JSON.stringify(store.getTicket(slug, ticket.ref).dispatch);
+  assert.throws(() => store.prepareDispatch(slug, ticket.ref, { sessionId: 'real-main', workProvenance: { kind: 'behavior-preserving-refactor', sources: [] } }, { allowWorkProvenance: true }), /late declaration/);
+  assert.equal(JSON.stringify(store.getTicket(slug, ticket.ref).dispatch), before);
+  releaseProvenance(claimed);
+});
+
+test('source provenance refuses forged producer generation and unrelated immutable capture identity', async () => {
+  const origin = await nativeProvenanceProducer();
+  const ticket = provenanceTicket('source provenance rejects incompatible producer evidence');
+  assert.throws(() => store.prepareDispatch(slug, ticket.ref, { sharedTree: true, sessionId: 'source-origin-main', workProvenance: {
+    kind: 'inherited-read-only', sources: [{ ...origin, preparedAt: 'forged-generation' }] } }, { allowWorkProvenance: true }), /producer generation mismatch/);
+  assert.throws(() => store.prepareDispatch(slug, ticket.ref, { sharedTree: true, sessionId: 'source-origin-main', workProvenance: {
+    kind: 'inherited-read-only', sources: [{ ...origin, captureId: 'unrelated-control' }] } }, { allowWorkProvenance: true }), /capture identity is unavailable/);
+  assert.equal(store.getTicket(slug, ticket.ref).dispatch, undefined);
+});

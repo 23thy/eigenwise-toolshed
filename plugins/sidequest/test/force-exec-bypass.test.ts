@@ -47,3 +47,19 @@ test('composition admission host hook denies subagent probes and grants, even wi
   }
   assert.equal(preToolUseDecision('', 'composition-main-session', grant).includes('"permissionDecision":"deny"'), false);
 });
+
+
+test('work provenance host hook rejects a worker declaration under the main session and permits the main thread', () => {
+  const hook = path.join(__dirname, '../hooks/force-exec-bypass.js');
+  const declaration = { ref: 'SQ-1', workProvenance: { kind: 'inherited-read-only', sources: [] } };
+  const worker = spawnSync(process.execPath, [hook], { input: JSON.stringify({ hook_event_name: 'PreToolUse', agent_id: 'synthetic-worker',
+    session_id: 'synthetic-main', tool_name: 'mcp__plugin_sidequest_board__dispatch', tool_input: declaration }),
+    encoding: 'utf8', windowsHide: true, timeout: 10_000 });
+  assert.equal(worker.status, 0, worker.stderr);
+  assert.match(worker.stdout, /subagents cannot declare work provenance/);
+  const main = spawnSync(process.execPath, [hook], { input: JSON.stringify({ hook_event_name: 'PreToolUse', agent_id: '',
+    session_id: 'synthetic-main', tool_name: 'mcp__plugin_sidequest_board__dispatch', tool_input: declaration }),
+    encoding: 'utf8', windowsHide: true, timeout: 10_000 });
+  assert.equal(main.status, 0, main.stderr);
+  assert.equal(main.stdout.includes('"permissionDecision":"deny"'), false);
+});

@@ -9,6 +9,7 @@ const { WHOLE_TREE_SCOPE } = require('../commit-scope.js');
 const { compositionCheckoutCommit, consumePreparedComposition, consumedAdmissionRefusal } = require('./composition-admission.js');
 import type { CompositionDispatch, CompositionTicket } from './composition-admission';
 import type { VerificationRequirement } from '../kernel/verification';
+import { authorizeWorkDeclaration, prepareWorkProvenance, workDeclaration } from './work-provenance';
 
 type NativeCheckoutCreation = CompositionDispatch & {
   sessionId?: string | null; worktreeBindingSource?: string;
@@ -2738,8 +2739,12 @@ function priorAttemptFields(plan: PreparedDispatchPlan) {
 }
 
 function preparedDispatchRecord(slug: string, t: StoredRecord, current: StoredRecord, plan: PreparedDispatchPlan, opts: DispatchOptions, preflight: DispatchPreflight) {
+  const provenance = preparationProvenanceFields(plan, opts, preflight.preparedCompatibility);
+  const workProvenance = prepareWorkProvenance(preflight.projectPath, opts.workProvenance, String(opts.sessionId || ''), ref => getTicket(slug, ref));
   return {
-    ...preparationProvenanceFields(plan, opts, preflight.preparedCompatibility),
+    ...provenance,
+    lifecycleAttempt: { ...provenance.lifecycleAttempt, workProvenance },
+    workProvenance,
     ...checkoutPlacementFields(plan, preflight, opts),
     declaredFiles: plan.artifact.declaredFiles,
     boardAddedFiles: plan.artifact.boardAddedFiles,
@@ -2846,7 +2851,14 @@ function prepareUnderDispatchLocks(slug: string, idOrRef: string, found: StoredR
   }
 }
 
-function prepareDispatch(slug?: any, idOrRef?: any, opts?: any) {
+function prepareDispatch(slug: string, idOrRef: string, opts: Record<string, unknown> = {}, grant: { allowWorkProvenance?: boolean } = {}) {
+  const current = getTicket(slug, idOrRef)?.dispatch;
+  authorizeWorkDeclaration(opts.workProvenance, opts.sessionId, grant.allowWorkProvenance === true, Boolean(current && !current.terminalAt));
+  const declaration = opts.workProvenance === undefined ? undefined : workDeclaration(opts.workProvenance);
+  return prepareDispatchRequest(slug, idOrRef, { ...opts, workProvenance: declaration });
+}
+
+function prepareDispatchRequest(slug?: any, idOrRef?: any, opts?: any) {
   opts = opts || {};
   if (opts.retireOnly === true) return retireUnboundDispatchOnly(slug, idOrRef, opts);
   const { projectPath, found } = dispatchableTicket(slug, idOrRef, opts);
