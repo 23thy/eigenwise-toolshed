@@ -544,7 +544,7 @@ Expires: ${checkpoint.expiresAt}`;
     if (!value || typeof value !== "object") return null;
     const kind = String(value.verifyKind || "").trim().toLowerCase();
     const command = String(value.verify || "").trim();
-    if (!["command", "suite"].includes(kind) || !command) return null;
+    if (!["command", "suite", "typecheck"].includes(kind) || !command) return null;
     return verificationRequirement({ kind, command, evidence: command });
   }
   function recordedVerificationCaptures(ticket) {

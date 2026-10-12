@@ -117,7 +117,7 @@ function createWarnings({ boardConfig, categoryReadOnly, claimReclaimable, coerc
     if (verifyKind === "attestation") return attestationErrors(value, artifact);
     if (String(artifact || "").trim()) return ["attestationArtifact requires verifyKind: attestation."];
     if (verifyKind === "manual" && /^manual:/i.test(String(value || "").trim())) return verifyCommandErrors(value);
-    if (verifyKind === "command" || verifyKind === "suite") return verifyCommandErrors(value);
+    if (["command", "suite", "typecheck"].includes(verifyKind)) return verifyCommandErrors(value);
     return [];
   }
   function requireVerifyOracle(kind, value, artifact) {

@@ -2,7 +2,7 @@
 
 import type { Diagnostic } from './index.js';
 
-export const VERIFICATION_KINDS = ['suite', 'command', 'document', 'link', 'schema', 'manual', 'attestation', 'review', 'custom'] as const;
+export const VERIFICATION_KINDS = ['suite', 'command', 'typecheck', 'document', 'link', 'schema', 'manual', 'attestation', 'review', 'custom'] as const;
 export type VerificationKind = (typeof VERIFICATION_KINDS)[number];
 
 export const VERIFICATION_STATUSES = ['passed', 'failed_suite', 'toolchain_missing', 'could_not_run', 'timeout', 'manual', 'attestation', 'skipped', 'failed_check', 'deferred'] as const;
@@ -120,7 +120,7 @@ export function validationDiagnostic(code: string, message: string): Diagnostic 
 export function verificationRequirement(input: RequirementInput): VerificationRequirement {
   const kind = classifyVerificationKind(input.evidence || input.command, input.kind);
   const evidence = nonEmpty(input.evidence);
-  const command = nonEmpty(input.command || (kind === 'command' ? evidence : ''));
+  const command = nonEmpty(input.command || (['command', 'typecheck'].includes(kind) ? evidence : ''));
   const suite = suiteFrom(input);
   if (kind === 'attestation') {
     const artifact = nonEmpty(input.artifact);
@@ -135,7 +135,7 @@ export function verificationRequirement(input: RequirementInput): VerificationRe
   if (['document', 'link', 'schema', 'custom'].includes(kind)) {
     return Object.freeze({ kind, evidenceContract: evidence || `${kind} verification evidence` });
   }
-  return Object.freeze({ kind: 'command', command: command || undefined, evidenceContract: command || 'command output' });
+  return Object.freeze({ kind, command: command || undefined, evidenceContract: command || 'command output' });
 }
 
 export function verificationWaiverDiagnostic(waiver: VerificationWaiver): Diagnostic {

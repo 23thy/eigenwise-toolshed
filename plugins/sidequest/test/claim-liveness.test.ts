@@ -1751,7 +1751,9 @@ test('source provenance distinguishes GREEN behavior-preserving refactors from n
   fs.writeFileSync(path.join(PROJECT_DIR, provenanceFiles[0]), 'module.exports = 1 + 1;\n');
   fs.appendFileSync(path.join(PROJECT_DIR, provenanceFiles[1]), 'test("refactored value stays two", () => assert.equal(require("../lib/provenance"), 2));\n');
   execFileSync(process.execPath, ['--test', provenanceFiles[1]], { cwd: PROJECT_DIR, stdio: 'pipe', timeout: 10_000, env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
-  assert.equal(provenanceCompletion(refactor).ok, true);
+  const completed = provenanceCompletion(refactor);
+  assert.equal(completed.ok, true);
+  assert.match(completed.comment.body, /negativeControl: not_required\(behavior-preserving-refactor\)/);
   releaseProvenance(refactor);
   git(['add', ...provenanceFiles]);
   git(['commit', '-m', 'Green refactor fixture']);
@@ -1793,4 +1795,40 @@ test('source provenance refuses forged producer generation and unrelated immutab
   assert.throws(() => store.prepareDispatch(slug, ticket.ref, { sharedTree: true, sessionId: 'source-origin-main', workProvenance: {
     kind: 'inherited-read-only', sources: [{ ...origin, captureId: 'unrelated-control' }] } }, { allowWorkProvenance: true }), /capture identity is unavailable/);
   assert.equal(store.getTicket(slug, ticket.ref).dispatch, undefined);
+});
+
+
+test('annotation-only work executes the author-pinned typecheck oracle without a control', async () => {
+  const files = ['lib/annotation.js', 'test/annotation.test.js'];
+  const command = process.execPath + ' ' + require.resolve('typescript/bin/tsc') + ' --allowJs --checkJs --noEmit --skipLibCheck lib/annotation.js';
+  const ticket = store.createTicket(slug, { title: 'annotation oracle uses the typechecker', category: 'coding.normal', files,
+    description: 'Where: annotation fixture. Contract: typecheck annotations without a behavior control. Verify: the real TypeScript compiler checks the annotated source.',
+    executorVerify: command, executorVerifyKind: 'typecheck', source: 'mcp' });
+  const claimed = await claimProvenance(ticket, 'type-annotation-only');
+  fs.writeFileSync(path.join(PROJECT_DIR, files[0]), '/** @type {number} */\nconst value = 2;\nmodule.exports = value;\n');
+  fs.writeFileSync(path.join(PROJECT_DIR, files[1]), "const test = require('node:test'); const assert = require('node:assert/strict'); test('annotation preserves value two', () => assert.equal(require('../lib/annotation'), 2));\n");
+  git(['add', ...files]);
+  git(['commit', '-m', 'annotation typecheck fixture']);
+  const captured = await require('../lib/verify-capture.js').runCapturedVerification(command, { project: PROJECT_DIR, ticket: claimed.ref }, PROJECT_DIR);
+  assert.equal(captured.capture.status, 'passed');
+  assert.equal(captured.recorded.ok, true);
+  assert.equal(store.pinnedVerificationRequirement(store.getTicket(slug, claimed.ref)).kind, 'typecheck');
+  const completed = provenanceCompletion(claimed);
+  assert.equal(completed.ok, true);
+  assert.match(completed.comment.body, /negativeControl: not_required\(type-annotation-only\)/);
+  releaseProvenance(claimed);
+});
+
+test('docs and fixture-only frozen work record their completion exemptions', async () => {
+  for (const kind of ['docs', 'fixture-only']) {
+    const ticket = await claimProvenance(provenanceTicket('nonbehavior oracle ' + kind), kind);
+    fs.appendFileSync(path.join(PROJECT_DIR, provenanceFiles[0]), '\n');
+    fs.appendFileSync(path.join(PROJECT_DIR, provenanceFiles[1]), '\n');
+    const completed = provenanceCompletion(ticket);
+    assert.equal(completed.ok, true);
+    assert.ok(completed.comment.body.includes('negativeControl: not_required(' + kind + ')'));
+    releaseProvenance(ticket);
+    git(['add', ...provenanceFiles]);
+    git(['commit', '-m', 'nonbehavior completion fixture ' + kind]);
+  }
 });

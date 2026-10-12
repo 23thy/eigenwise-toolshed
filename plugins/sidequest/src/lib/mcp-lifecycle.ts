@@ -768,7 +768,7 @@ const tools: ToolDefinition[] = [
         by: { type: 'string' },
         model: { type: 'string', description: 'Concrete runtime model that actually worked this ticket (provenance).' },
         effort: { type: 'string', enum: store.VALID_EFFORTS },
-        body: { type: 'string', description: 'Final report stored as the completion comment.' },
+        body: { type: 'string', description: 'Final report stored as the completion comment; non-behavior frozen work records negativeControl: not_required(reason), while new behavior requires the claim-holder assertion-failure marker.' },
         verify: { type: 'string', maxLength: 4000, description: 'Typed evidence for active commandless working-tree delivery, and for a clean externalDeliverable:true closeout on a ticket without a pinned command. Command or suite delivery still requires its matching verify-capture.' },
         session: { type: 'string' },
       },
@@ -826,7 +826,7 @@ const tools: ToolDefinition[] = [
           type: 'object',
           description: 'Sealed replacement.',
           properties: {
-            verifyKind: { type: 'string', enum: ['command', 'suite'] },
+            verifyKind: { type: 'string', enum: ['command', 'suite', 'typecheck'] },
             verify: { type: 'string', maxLength: store.EXECUTOR_VERIFY_MAX },
           },
           required: ['verifyKind', 'verify'],
@@ -845,7 +845,7 @@ const tools: ToolDefinition[] = [
       if (verificationSupersession !== undefined) {
         const verifyKind = String(verificationSupersession?.verifyKind || '').trim().toLowerCase();
         const verify = String(verificationSupersession?.verify || '').trim();
-        if (!args.deliveryCommit || args.integration || args.abandonSubmission || !['command', 'suite'].includes(verifyKind)) {
+        if (!args.deliveryCommit || args.integration || args.abandonSubmission || !['command', 'suite', 'typecheck'].includes(verifyKind)) {
           return mutationAck(slug, {
             ok: false,
             reason: 'invalid_verification_supersession',

@@ -1010,70 +1010,29 @@ function negativeControlResult(ticket?: any, expectedTestNames: string[] = []) {
   return otherControlAuthor ? { kind: 'wrong_author', by: otherControlAuthor } : { kind: 'missing' };
 }
 
-function negativeControlRefusal(ticket?: any, result?: any) {
-  const recipe = negativeControlRecoveryGuidance();
-  if (result.kind === 'import_error' || result.kind === 'collection_error') {
-    const failure = result.kind === 'import_error' ? 'an ImportError' : 'a collection error';
-    return {
-      ok: false,
-      reason: `negative_control_${result.kind}`,
-      message: `${ticket.ref} completion refused: the recorded negative control failed with ${failure}. ${recipe}`,
-    };
-  }
-  if (result.kind === 'undeclared_failure_kind') {
-    return {
-      ok: false,
-      reason: 'negative_control_failure_kind_required',
-      message: `${ticket.ref} completion refused: the negative control must declare how the changed tests failed. Add failure-kind=assertion, failure-kind=import, or failure-kind=collection after failed=<n> on the marker line. ${recipe}`,
-    };
-  }
-  if (result.kind === 'missing_target_or_assertion') {
-    return {
-      ok: false,
-      reason: 'negative_control_evidence_required',
-      message: `${ticket.ref} completion refused: the negative control must name the broken target and the assertion that failed. ${recipe}`,
-    };
-  }
-  if (result.kind === 'zero_failures') {
-    return {
-      ok: false,
-      reason: 'negative_control_zero_failures',
-      message: `${ticket.ref} completion refused: failed=0 means tests passed against the pre-change code and do not test the change. ${recipe}`,
-    };
-  }
-  if (result.kind === 'unreported_tests') {
-    return {
-      ok: false,
-      reason: 'negative_control_test_required',
-      message: `${ticket.ref} completion refused: the negative control did not report these added or modified tests: ${result.tests.join(', ')}. Claim-holder test markers found: ${(result.markerLines || []).map((line: string) => `"${line}"`).join(', ') || 'none'}. ${recipe}`,
-    };
-  }
-  if (result.kind === 'short_waiver') {
-    return {
-      ok: false,
-      reason: 'negative_control_waiver_too_short',
-      message: `${ticket.ref} completion refused: a negative-control waiver needs a reason of at least 20 characters. ${recipe}`,
-    };
-  }
-  if (result.kind === 'malformed_marker') {
-    return {
-      ok: false,
-      reason: 'negative_control_required',
-      message: `${ticket.ref} completion refused: found negative-control marker line "${result.markerLine}", but the number was not where it was expected. ${recipe}`,
-    };
-  }
-  if (result.kind === 'wrong_author') {
-    return {
-      ok: false,
-      reason: 'negative_control_required',
-      message: `${ticket.ref} completion refused: a negative control was recorded by "${result.by}", but the current claim holder is "${ticket.claim.by}". ${recipe}`,
-    };
-  }
-  return {
-    ok: false,
-    reason: 'negative_control_required',
-    message: `${ticket.ref} completion refused: changed scoped paths include both test-side and non-test-side files, but the claim holder has not recorded a negative control. ${recipe}`,
+type NegativeControlRefusalTicket = { ref?: string; claim?: { by?: string } };
+type NegativeControlFailure = { kind: string; tests?: string[]; markerLines?: string[]; markerLine?: string; by?: string };
+
+function negativeControlRefusal(ticket: NegativeControlRefusalTicket, result: NegativeControlFailure) {
+  const messages: Record<string, string> = {
+    import_error: 'the recorded negative control failed with an ImportError',
+    collection_error: 'the recorded negative control failed with a collection error',
+    undeclared_failure_kind: 'the negative control must declare failure-kind=assertion, failure-kind=import, or failure-kind=collection',
+    missing_target_or_assertion: 'the negative control must name the broken target and the assertion that failed',
+    zero_failures: 'failed=0 means tests passed against the pre-change code and do not test the change',
+    unreported_tests: 'the negative control did not report these added or modified tests: ' + result.tests?.join(', '),
+    short_waiver: 'a negative-control waiver needs a reason of at least 20 characters',
+    malformed_marker: 'the negative-control marker has an invalid format',
+    wrong_author: 'a negative control was recorded by "' + result.by + '", but the current claim holder is "' + ticket.claim?.by + '"',
+    missing: 'new behavior needs a claim-holder negative control',
   };
+  const reasons: Record<string, string> = {
+    import_error: 'negative_control_import_error', collection_error: 'negative_control_collection_error',
+    undeclared_failure_kind: 'negative_control_failure_kind_required', missing_target_or_assertion: 'negative_control_evidence_required',
+    zero_failures: 'negative_control_zero_failures', unreported_tests: 'negative_control_test_required', short_waiver: 'negative_control_waiver_too_short',
+  };
+  return { ok: false as const, reason: reasons[result.kind] ?? 'negative_control_required',
+    message: ticket.ref + ' completion refused: ' + (messages[result.kind] ?? messages.missing) + '. ' + negativeControlRecoveryGuidance() };
 }
 
 function completionScope(slug?: any, ticket?: any) {
@@ -1120,12 +1079,19 @@ function emptyScopeCompletion(ticket: { ref?: string }, declaredFiles: string[])
     };
 }
 
+function isBehaviorSourcePath(file: string) {
+  const normalized = file.replace(/\\/g, '/');
+  return /\.(?:[cm]?[jt]sx?|py|php|rb|go|rs|java|cs|c|cpp|h|sh|vue|svelte)$/.test(normalized)
+    && !/(?:^|\/)(?:fixtures?|docs?|examples?)(?:\/|$)|\.d\.[cm]?ts$/.test(normalized);
+}
+
 function ownedControlCheck(ticket: ProvenanceCompletionTicket, delta: unknown, ownedPaths: string[]) {
-  if (ticket.dispatch?.workProvenance?.kind === 'behavior-preserving-refactor') return { ok: true };
-  const mixed = [ownedPaths.some(isTestSidePath), ownedPaths.some(file => !isTestSidePath(file))].every(Boolean);
-  if (!mixed) return { ok: true };
+  const kind = ticket.dispatch?.workProvenance?.kind;
+  if (['behavior-preserving-refactor', 'inherited-read-only', 'docs', 'type-annotation-only', 'fixture-only'].includes(String(kind))) return { ok: true as const, negativeControl: 'not_required(' + kind + ')' };
+  const mixed = [ownedPaths.some(isTestSidePath), ownedPaths.filter(file => !isTestSidePath(file)).some(isBehaviorSourcePath)].every(Boolean);
+  if ([!kind, !mixed].every(Boolean)) return { ok: true as const, negativeControl: 'not_required(no changed source under changed tests)' };
   const control = negativeControlResult(ticket, changedTestNames(delta, ownedPaths));
-  return ['failed', 'waived'].includes(control.kind) ? { ok: true } : negativeControlRefusal(ticket, control);
+  return ['failed', 'waived'].includes(control.kind) ? { ok: true as const, negativeControl: control.kind } : negativeControlRefusal(ticket, control);
 }
 
 function completionTreeCheck(slug: string, ticket: ProvenanceCompletionTicket, opts?: { explicitNoOp?: boolean }) {
@@ -1136,7 +1102,7 @@ function completionTreeCheck(slug: string, ticket: ProvenanceCompletionTicket, o
   const control = ownedControlCheck(ticket, facts.delta, facts.ownedPaths);
   if (!control.ok) return control;
   return { ok: true, applicable: true, changedPaths: facts.changedPaths, ownedPaths: facts.ownedPaths,
-    noOp: !facts.changedPaths.length, workProvenance: facts.provenance };
+    noOp: !facts.changedPaths.length, workProvenance: facts.provenance, negativeControl: control.negativeControl };
 }
 
 function submissionCompletionTreeCheck(slug: string, ticket: ProvenanceCompletionTicket, opts?: { explicitNoOp?: boolean }) {

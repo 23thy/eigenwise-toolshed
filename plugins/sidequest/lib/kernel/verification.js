@@ -33,7 +33,7 @@ __export(verification_exports, {
   verificationWaiverDiagnostic: () => verificationWaiverDiagnostic
 });
 module.exports = __toCommonJS(verification_exports);
-const VERIFICATION_KINDS = ["suite", "command", "document", "link", "schema", "manual", "attestation", "review", "custom"];
+const VERIFICATION_KINDS = ["suite", "command", "typecheck", "document", "link", "schema", "manual", "attestation", "review", "custom"];
 const VERIFICATION_STATUSES = ["passed", "failed_suite", "toolchain_missing", "could_not_run", "timeout", "manual", "attestation", "skipped", "failed_check", "deferred"];
 const VERIFICATION_ENVIRONMENTS = ["isolated", "shared"];
 function nonEmpty(value) {
@@ -62,7 +62,7 @@ function validationDiagnostic(code, message) {
 function verificationRequirement(input) {
   const kind = classifyVerificationKind(input.evidence || input.command, input.kind);
   const evidence = nonEmpty(input.evidence);
-  const command = nonEmpty(input.command || (kind === "command" ? evidence : ""));
+  const command = nonEmpty(input.command || (["command", "typecheck"].includes(kind) ? evidence : ""));
   const suite = suiteFrom(input);
   if (kind === "attestation") {
     const artifact = nonEmpty(input.artifact);
@@ -77,7 +77,7 @@ function verificationRequirement(input) {
   if (["document", "link", "schema", "custom"].includes(kind)) {
     return Object.freeze({ kind, evidenceContract: evidence || `${kind} verification evidence` });
   }
-  return Object.freeze({ kind: "command", command: command || void 0, evidenceContract: command || "command output" });
+  return Object.freeze({ kind, command: command || void 0, evidenceContract: command || "command output" });
 }
 function verificationWaiverDiagnostic(waiver) {
   return validationDiagnostic("verification_waived", `Verification gate ${waiver.affectedGate} waived by ${waiver.authority}: ${waiver.reason}`);

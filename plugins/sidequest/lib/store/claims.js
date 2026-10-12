@@ -204,7 +204,11 @@ ${evidence.outputTail}`;
     const event = verificationComment(comment?.body);
     if (!event || event.kind !== "complete") return { ok: true };
     if (ticket?.claim?.by === comment?.by && (event.status === "failed_suite" || event.status === "could_not_run")) return { ok: true };
-    return completionTreeCheck(slug, ticket, { explicitNoOp: event.noOp });
+    const completion = completionTreeCheck(slug, ticket, { explicitNoOp: event.noOp });
+    if (completion.ok && completion.negativeControl?.startsWith("not_required(")) {
+      comment.body += "\nnegativeControl: " + completion.negativeControl;
+    }
+    return completion;
   }
   function recordClaimVerification(ticket, comment) {
     const claim = ticket?.claim;

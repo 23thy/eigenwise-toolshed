@@ -5,7 +5,7 @@ import path from 'node:path';
 import { isInScope, ticketCommitScope, validateCommitRangeScope } from '../commit-scope';
 import type { CompletedVerificationCapture } from '../kernel/verification';
 
-export const WORK_KINDS = ['new-behavior', 'behavior-preserving-refactor', 'inherited-read-only'] as const;
+export const WORK_KINDS = ['new-behavior', 'behavior-preserving-refactor', 'inherited-read-only', 'docs', 'type-annotation-only', 'fixture-only'] as const;
 export type WorkKind = typeof WORK_KINDS[number];
 export type SourceOriginInput = Readonly<{ ref: string; preparedAt: string; commit: string; captureId?: string }>;
 export type WorkDeclaration = Readonly<{ kind: WorkKind; sources: readonly SourceOriginInput[] }>;

@@ -42,7 +42,7 @@ function preparedVerificationRequirement(ticket, projectPath) {
   return verificationRequirement({
     kind,
     evidence: legacyWithoutVerifier ? "legacy project verifier was not recorded" : recorded || artifact || void 0,
-    command: ["suite", "command"].includes(kind) ? recorded || void 0 : void 0,
+    command: ["suite", "command", "typecheck"].includes(kind) ? recorded || void 0 : void 0,
     artifact: ticket?.executorAttestationArtifact,
     suite
   });
@@ -76,7 +76,7 @@ function recordVerificationAmendment(ticket, amendment, previousRequirement, nex
 }
 function pinnedVerificationRequirement(ticket, projectPath, verifyEnvironment, sharedTree) {
   const requirement = preparedVerificationRequirement(ticket, projectPath);
-  const deferred = !sharedTree && verifyEnvironment === "shared" && ["command", "suite"].includes(requirement.kind);
+  const deferred = !sharedTree && verifyEnvironment === "shared" && ["command", "suite", "typecheck"].includes(requirement.kind);
   return deferred ? Object.freeze({ ...requirement, environment: "shared" }) : requirement;
 }
 function createDispatch(dependencies) {
