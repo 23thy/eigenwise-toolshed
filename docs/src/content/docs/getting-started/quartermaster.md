@@ -74,6 +74,11 @@ its coverage command a fresh `QUARTERMASTER_COVERAGE_DIR` to write `lcov.info` i
 on one checkout do not read each other's coverage. A coverage command that exits 0 without writing
 fresh coverage exits 2 instead of scoring stale results.
 
+The gate is something you run, locally or in CI. Quartermaster never installs a hook that blocks a
+turn until a receipt exists, and if resupply finds one in your settings it recommends removing it and
+names the file. The gate scores what the session changed since the merge base, so files that came in
+through a merge, rebase, or pull are never demanded.
+
 It also shows the coverage command for your stack. The gate needs
 [lizard](https://github.com/terryyin/lizard) for complexity measurement. Setup never installs it. Exit
 2 means a prerequisite or measurement input is missing, including lizard finding zero functions for a
