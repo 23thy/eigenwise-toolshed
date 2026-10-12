@@ -1861,94 +1861,27 @@ test('pre-tool repeated-command hook warns for PowerShell commands', () => {
   assert.match(runHook(REPEATED_COMMAND_WARN, payload), /polling burns ~14s and ~60k tokens per call/);
 });
 
-test('pre-tool inline-work hook makes board dispatch the default for solo work', () => {
-  const session_id = `inline-solo-${Date.now()}`;
-  const output = runHookOutput(INLINE_WORK_NUDGE, {
-    session_id, cwd: BOARD_PATH, tool_name: 'Write', tool_input: {},
-  });
-  assert.equal(output.hookSpecificOutput.hookEventName, 'PreToolUse');
-  assert.equal(output.hookSpecificOutput.additionalContext, output.systemMessage, 'the nudge must reach the model, not only the terminal');
-  assert.match(output.systemMessage, /^sidequest: 0 reads \/ 1 commands with no board call\./);
-  assert.match(output.systemMessage, /standing authorization: file the ticket\(s\) with add and dispatch now; do not offer\./);
-  assert.match(output.systemMessage, /Only a one-or-two-file edit at a known location stays inline\.$/);
-  assert.doesNotMatch(output.systemMessage, /offer dispatch|name why inline/i);
-  assert.ok(Buffer.byteLength(output.systemMessage, 'utf8') <= 768, 'the PreToolUse nudge must fit its context budget');
-  assert.equal(runHookOutput(INLINE_WORK_NUDGE, {
-    session_id, cwd: BOARD_PATH, tool_name: 'Write', tool_input: {},
-  }), null);
-});
-
-test('pre-tool inline-work hook nudges prolonged investigations with live counts', () => {
-  const session_id = `inline-investigation-${Date.now()}`;
-  const payload = { session_id, cwd: BOARD_PATH, tool_name: 'Read', tool_input: {} };
-  for (let readActions = 1; readActions < 8; readActions += 1) assert.equal(runHookOutput(INLINE_WORK_NUDGE, payload), null);
-  const firstInvestigationNudge = runHookOutput(INLINE_WORK_NUDGE, payload);
-  assert.match(firstInvestigationNudge.systemMessage, /^sidequest: 8 reads \/ 0 commands with no board call\./);
-  assert.ok(Buffer.byteLength(firstInvestigationNudge.systemMessage, 'utf8') <= 768, 'the PreToolUse investigation nudge must fit its context budget');
-  for (let readActions = 9; readActions < 24; readActions += 1) assert.equal(runHookOutput(INLINE_WORK_NUDGE, payload), null);
-  const escalation = runHookOutput(INLINE_WORK_NUDGE, payload);
-  assert.match(escalation.systemMessage, /^sidequest: 24 reads \/ 0 commands with no board call\. You have continued after an earlier reminder\./);
-  assert.ok(Buffer.byteLength(escalation.systemMessage, 'utf8') <= 768, 'the repeated PreToolUse nudge must fit its context budget');
-});
-
-test('pre-tool inline-work hook escalates substantive work at widening intervals', () => {
-  const session_id = `inline-escalation-${Date.now()}`;
+test('pre-tool inline-work hook gives one advisory after 25 substantive actions', () => {
+  const session_id = `inline-advisory-threshold-${Date.now()}`;
   const payload = { session_id, cwd: BOARD_PATH, tool_name: 'Write', tool_input: {} };
-  assert.match(runHookOutput(INLINE_WORK_NUDGE, payload).systemMessage, /1 commands with no board call/);
-  for (let substantiveActions = 2; substantiveActions < 4; substantiveActions += 1) assert.equal(runHookOutput(INLINE_WORK_NUDGE, payload), null);
-  assert.match(runHookOutput(INLINE_WORK_NUDGE, payload).systemMessage, /0 reads \/ 4 commands with no board call/);
-  for (let substantiveActions = 5; substantiveActions < 12; substantiveActions += 1) assert.equal(runHookOutput(INLINE_WORK_NUDGE, payload), null);
-  assert.match(runHookOutput(INLINE_WORK_NUDGE, payload).systemMessage, /0 reads \/ 12 commands with no board call/);
-  for (let substantiveActions = 13; substantiveActions < 36; substantiveActions += 1) assert.equal(runHookOutput(INLINE_WORK_NUDGE, payload), null);
-  assert.match(runHookOutput(INLINE_WORK_NUDGE, payload).systemMessage, /0 reads \/ 36 commands with no board call/);
+  for (let action = 1; action < 25; action += 1) assert.equal(runHookOutput(INLINE_WORK_NUDGE, payload), null);
+  const output = runHookOutput(INLINE_WORK_NUDGE, payload);
+  assert.equal(output.hookSpecificOutput.additionalContext, output.systemMessage);
+  assert.match(output.systemMessage, /25 substantive actions/);
+  assert.match(output.systemMessage, /Small fixes at known locations may stay inline/);
+  assert.ok(Buffer.byteLength(output.systemMessage, 'utf8') <= 768);
+  for (let action = 0; action < 30; action += 1) assert.equal(runHookOutput(INLINE_WORK_NUDGE, payload), null);
+  runHookOutput(INLINE_WORK_NUDGE, { ...payload, tool_name: 'mcp__plugin_sidequest_board__list' });
+  runHookOutput(BOARD_FIRST_REMINDER, { session_id, cwd: BOARD_PATH, prompt: 'hi' });
+  for (let action = 0; action < 25; action += 1) assert.equal(runHookOutput(INLINE_WORK_NUDGE, payload), null);
 });
 
-test('pre-tool inline-work hook nudges the second native Agent spawn at widening intervals', () => {
-  const session_id = `inline-native-agent-${Date.now()}`;
-  const payload = { session_id, cwd: BOARD_PATH, tool_name: 'Agent', tool_input: { subagent_type: 'Explore' } };
-  assert.equal(runHookOutput(INLINE_WORK_NUDGE, payload), null);
-  const secondNativeAgentNudge = runHookOutput(INLINE_WORK_NUDGE, payload);
-  assert.ok(secondNativeAgentNudge, 'the second native Agent spawn must nudge');
-  assert.match(secondNativeAgentNudge.systemMessage, /^sidequest: 2 native subagents this session;/);
-  assert.match(secondNativeAgentNudge.systemMessage, /native Explore\/general-purpose inherits the session model/);
-  assert.match(secondNativeAgentNudge.systemMessage, /codebase-exploration, research, spike-investigation/);
-  assert.ok(Buffer.byteLength(secondNativeAgentNudge.systemMessage, 'utf8') <= 768, 'the native Agent nudge must fit its context budget');
-  for (let nativeAgentSpawns = 3; nativeAgentSpawns < 6; nativeAgentSpawns += 1) assert.equal(runHookOutput(INLINE_WORK_NUDGE, payload), null);
-  assert.match(runHookOutput(INLINE_WORK_NUDGE, payload).systemMessage, /^sidequest: 6 native subagents this session;/);
-});
-
-test('pre-tool inline-work hook treats Sidequest executor spawns as board interaction', () => {
-  const session_id = `inline-sidequest-agent-${Date.now()}`;
-  assert.equal(runHookOutput(INLINE_WORK_NUDGE, {
-    session_id, cwd: BOARD_PATH, tool_name: 'Agent', tool_input: { subagent_type: 'sidequest-exec-readonly-medium' },
-  }), null);
-  for (let readActions = 0; readActions < 8; readActions += 1) {
-    assert.equal(runHookOutput(INLINE_WORK_NUDGE, {
-      session_id, cwd: BOARD_PATH, tool_name: 'Read', tool_input: {},
-    }), null);
+test('pre-tool inline-work hook stays quiet for reads and native investigation agents', () => {
+  const session_id = `inline-readonly-${Date.now()}`;
+  for (const tool_name of ['Read', 'Grep', 'Glob', 'Agent']) {
+    const payload = { session_id, cwd: BOARD_PATH, tool_name, tool_input: { subagent_type: 'Explore' } };
+    for (let action = 0; action < 26; action += 1) assert.equal(runHookOutput(INLINE_WORK_NUDGE, payload), null);
   }
-  for (let substantiveActions = 0; substantiveActions < 4; substantiveActions += 1) {
-    assert.equal(runHookOutput(INLINE_WORK_NUDGE, {
-      session_id, cwd: BOARD_PATH, tool_name: 'Write', tool_input: {},
-    }), null);
-  }
-  const nativePayload = { session_id, cwd: BOARD_PATH, tool_name: 'Agent', tool_input: { subagent_type: 'Explore' } };
-  assert.equal(runHookOutput(INLINE_WORK_NUDGE, nativePayload), null);
-  const nativeAgentNudge = runHookOutput(INLINE_WORK_NUDGE, nativePayload);
-  assert.ok(nativeAgentNudge, 'native spawns after a Sidequest executor spawn must still nudge');
-  assert.match(nativeAgentNudge.systemMessage, /^sidequest: 2 native subagents this session;/);
-});
-
-test('pre-tool inline-work hook nudges native Agent spawns after board interaction', () => {
-  const session_id = `inline-native-after-board-${Date.now()}`;
-  assert.equal(runHookOutput(INLINE_WORK_NUDGE, {
-    session_id, cwd: BOARD_PATH, tool_name: 'mcp__plugin_sidequest_board__claim', tool_input: {},
-  }), null);
-  const payload = { session_id, cwd: BOARD_PATH, tool_name: 'Agent', tool_input: {} };
-  assert.equal(runHookOutput(INLINE_WORK_NUDGE, payload), null);
-  const nativeAgentNudge = runHookOutput(INLINE_WORK_NUDGE, payload);
-  assert.ok(nativeAgentNudge, 'native Agent spawns must nudge even after a board interaction');
-  assert.match(nativeAgentNudge.systemMessage, /^sidequest: 2 native subagents this session;/);
 });
 
 test('pre-tool inline-work hook keeps bounded transcript lookups inline-safe', () => {
@@ -2056,13 +1989,15 @@ test('pre-tool inline-work nudge counts PowerShell edits and skips test and buil
   const shell = (tool_name: string, command: string) => runHookOutput(INLINE_WORK_NUDGE, { session_id, cwd: BOARD_PATH, tool_name, tool_input: { command } });
   for (const [tool, command] of <Array<[string, string]>>[
     ['Bash', 'npm test'],
+    ['PowerShell', 'npm --prefix plugins/demo run build:check'],
     ['Bash', 'cd plugins/demo && npm run build:check'],
     ['Bash', 'node --import tsx --test test/hooks.test.ts'],
     ['Bash', 'node -e "console.log(1)"'],
     ['PowerShell', 'npm test'],
     ['PowerShell', 'Get-ChildItem src'],
   ]) assert.equal(shell(tool, command), null, `${tool}: ${command} must not count as an edit`);
-  assert.match(shell('PowerShell', 'Set-Content notes.txt hello').systemMessage, /^sidequest: 1 reads \/ 1 commands with no board call\./);
+  for (let action = 1; action < 25; action += 1) assert.equal(shell('PowerShell', 'Set-Content notes.txt hello'), null);
+  assert.match(shell('PowerShell', 'Set-Content notes.txt hello').systemMessage, /25 substantive actions/);
 });
 
 test('a new user prompt reopens the inline-work nudge after a board call, and keeps the Explore cap lifted', () => {
@@ -2071,7 +2006,8 @@ test('a new user prompt reopens the inline-work nudge after a board call, and ke
   assert.equal(runHookOutput(INLINE_WORK_NUDGE, { session_id, cwd: BOARD_PATH, tool_name: 'mcp__plugin_sidequest_board__list', tool_input: {} }), null);
   for (let i = 0; i < 5; i += 1) assert.equal(runHookOutput(INLINE_WORK_NUDGE, write), null, 'a board call silences the nudge for the rest of that prompt');
   runHookOutput(BOARD_FIRST_REMINDER, { session_id, cwd: BOARD_PATH, prompt: 'hi' });
-  assert.match(runHookOutput(INLINE_WORK_NUDGE, write).systemMessage, /^sidequest: 0 reads \/ 1 commands with no board call\./);
+  for (let action = 1; action < 25; action += 1) assert.equal(runHookOutput(INLINE_WORK_NUDGE, write), null);
+  assert.match(runHookOutput(INLINE_WORK_NUDGE, write).systemMessage, /25 substantive actions/);
   for (let round = 1; round <= 3; round += 1) {
     const spawn = runHookOutput(FORCE_BYPASS, {
       session_id, cwd: BOARD_PATH, tool_name: 'Agent', tool_input: { subagent_type: 'Explore', prompt: `Sweep the docs tree, angle ${round}.` },
@@ -2085,7 +2021,7 @@ test('user-prompt reminder waits for a work request instead of a greeting', () =
   assert.equal(runHookOutput(BOARD_FIRST_REMINDER, { ...payload, prompt: 'hi' }), null);
   assert.equal(runHookOutput(BOARD_FIRST_REMINDER, { ...payload, prompt: 'what is the status?' }), null);
   const reminder = runHookOutput(BOARD_FIRST_REMINDER, { ...payload, prompt: 'Refactor the claim flow.' });
-  assert.match(reminder.hookSpecificOutput.additionalContext, /file precise tickets with add and dispatch them without offering\. Only a one-or-two-file edit at a known location stays inline\.$/);
+  assert.match(reminder.hookSpecificOutput.additionalContext, /offer one-owner dispatch/);
   assert.doesNotMatch(reminder.hookSpecificOutput.additionalContext, /informed inline judgment/);
 });
 
@@ -2100,7 +2036,7 @@ test('user-prompt reminder tells a boardless git repo root that the first add cr
 
   const hint = runHookOutput(BOARD_FIRST_REMINDER, { session_id: `boardless-repo-${Date.now()}`, cwd: repo, prompt });
   assert.equal(hint.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
-  assert.match(hint.hookSpecificOutput.additionalContext, /^sidequest: no board here yet\. .*the first add creates this repo's board and dispatch is ready through the default profile/);
+  assert.match(hint.hookSpecificOutput.additionalContext, /^sidequest: no board here yet\. .*offer one-owner dispatch; the first add creates the board/);
   assert.equal(store.findProject(repo).ok, false, 'the hint must not create the board');
   // The suite's throwaway SIDEQUEST_HOME lives under temp, which makes the store accept temp fixtures;
   // pointing the hook's temp dir at the scratch folder restores the rule a real session sees.
@@ -2114,8 +2050,8 @@ test('user-prompt reminder fires once for the first human prompt', () => {
   const payload = { session_id: `board-first-${Date.now()}`, cwd: BOARD_PATH, prompt: 'Fix the board hook.' };
   const reminder = runHookOutput(BOARD_FIRST_REMINDER, payload);
   assert.equal(reminder.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
-  assert.match(reminder.hookSpecificOutput.additionalContext, /using Explore only for a quick sweep/);
-  assert.match(reminder.hookSpecificOutput.additionalContext, /codebase-exploration spike/);
+  assert.match(reminder.hookSpecificOutput.additionalContext, /offer one-owner dispatch/);
+  assert.match(reminder.hookSpecificOutput.additionalContext, /read-only investigations may use native agents without tickets/);
   assert.equal(runHookOutput(BOARD_FIRST_REMINDER, payload), null);
 });
 
@@ -2149,7 +2085,7 @@ test('user-prompt reminder ignores automation without consuming the session flag
   assert.equal(runHookOutput(BOARD_FIRST_REMINDER, { ...payload, prompt: '<agent-message>Worker needs input.</agent-message>' }), null);
   assert.equal(runHookOutput(BOARD_FIRST_REMINDER, { ...payload, prompt: '<local-command>Command output.</local-command>' }), null);
   assert.equal(runHookOutput(BOARD_FIRST_REMINDER, { ...payload, prompt: '<local-command-caveat>Command output.</local-command-caveat>' }), null);
-  assert.match(runHook(BOARD_FIRST_REMINDER, { ...payload, prompt: 'Implement the ticket.' }), /file precise tickets with add and dispatch them without offering/);
+  assert.match(runHook(BOARD_FIRST_REMINDER, { ...payload, prompt: 'Implement the ticket.' }), /offer one-owner dispatch/);
 });
 
 test('user-prompt reminder ignores subagent identity variants and routing-disabled boards', () => {
@@ -3568,18 +3504,13 @@ test('session-start: tells orchestrators when to fan out independent work', () =
   const skill = fs.readFileSync(path.join(pluginRoot, 'skills', 'sidequest', 'SKILL.md'), 'utf8');
   const orchestration = fs.readFileSync(path.join(pluginRoot, 'skills', 'sidequest', 'references', 'orchestration.md'), 'utf8');
   const userStory = fs.readFileSync(path.join(pluginRoot, 'skills', 'user-story', 'SKILL.md'), 'utf8');
-  assert.match(skill, /independent audits, migrations, and reviews/i);
-  assert.match(skill, /Dispatch concurrently despite isolated-worktree overlap/i);
-  assert.match(skill, /sequential\/shared-design work together/i);
-  assert.match(skill, /size shards by items and verify cost/i);
-
   for (const surface of [skill, orchestration, userStory]) {
-    assert.match(surface, /one\s+investigation\s+ticket\s+per\s+independent\s+item/i);
+    assert.match(surface, /one owner/i);
+    assert.match(surface, /3\+ independently checkable pieces and a stated reason/i);
+    assert.match(surface, /named risk for each lens/i);
+    assert.match(surface, /inline without (?:a ticket|tickets)/i);
+    assert.doesNotMatch(surface, /NEVER means you implement\s+inline|one\s+investigation\s+ticket\s+per\s+independent\s+item/i);
   }
-  for (const surface of [skill, orchestration]) {
-    assert.match(surface, /SOLO-FIT picks\s+one-executor vs wave; it NEVER means you implement\s+inline/);
-  }
-  assert.match(userStory, /This never means the orchestrator implements it/);
 
   for (const source of ['', 'compact', 'resume']) {
     const context = runHookForBudget(SESSION, { session_id: `fanout-${source || 'startup'}`, source });

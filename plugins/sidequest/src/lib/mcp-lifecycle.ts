@@ -759,7 +759,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: 'done',
-    description: 'Finish. A readonly last dispatch closes without a submission; a clean writable scope needs externalDeliverable:true plus a current-attempt pinned verify-capture, or typed verify evidence when the ticket has no pinned command. Commandless working-tree delivery requires typed verify evidence.',
+    description: 'Finish with a report. A dispatched executor with no commit, no dirty declared path, and no pending submission may close without a fake submission. Repository changes require commit and submit. Commandless working-tree delivery requires typed verify evidence.',
     inputSchema: {
       type: 'object',
       properties: {

@@ -144,7 +144,7 @@ unsupported measurement stays visible.
 
 ### Choose the planning depth
 
-Use the lightest planning that fits. Exact small changes and operational asks can stay lightweight. Substantial or ambiguous work starts with a visible surgical contract: the outcome, non-goals, smallest authority needed, scope, bounded oracle (the check that decides whether it worked), and review limit. Claude settles why an improvement is worth making, its approach, and its boundary before dispatch. Research can supply facts and bounded alternatives. Executors implement that plan with normal local coding judgment and report evidence when a pinned choice cannot work.
+A bounded fix defaults to one owner and a focused check. Small fixes in a few known files may run inline without a ticket. Read-only investigations may use native Explore or general-purpose agents without tickets. A story or wave needs 3+ independently checkable pieces and a stated reason; a review panel needs a named risk for each lens. Substantial or ambiguous work starts with a visible surgical contract: the outcome, non-goals, smallest authority needed, scope, bounded oracle (the check that decides whether it worked), and review limit. Claude settles why an improvement is worth making, its approach, and its boundary before dispatch. Research can supply facts and bounded alternatives. Executors implement that plan with normal local coding judgment and report evidence when a pinned choice cannot work.
 
 For substantial or safety-sensitive changes, Claude first checks feasibility before expensive coding or
 tests: shared authority and callers, the smallest existing seam, support for the project's configured quality gate, if any, genuine
@@ -250,7 +250,7 @@ Ask Claude to do the board work in plain language:
 - `What is blocking the checkout ticket?`
 - `Review and integrate the checkout ticket if its verification passed.`
 
-For substantial changes, Claude can turn the request into a story with linked tickets so you can see the whole plan before execution. Side issues that come up during a session can become separate tickets instead of disappearing into the current task.
+For 3+ independently checkable pieces, Claude can create a story with linked tickets after stating why separate owners help. Side issues that come up during a session can become separate tickets instead of disappearing into the current task.
 
 Sidequest keeps ticket activity visible in the board. Ask Claude to check active work after a restart or when you need help with a ticket that was started in another session.
 
@@ -378,6 +378,8 @@ Ask Claude to set `deniedTools` on the board (`board_config`) or on one category
 **An unscoped executor could only write `docs/`.** Older builds gave a write ticket with no declared files, dispatched with `allowUnscoped`, only the board's `alwaysInScope` paths, so a repo with a `docs/` folder quietly scoped the executor to `docs/` and nothing else. Now `allowUnscoped` gives the executor the whole tree, and the dispatch result's `writeScope` and the briefing say so in one line, for example `write scope: unscoped (whole tree), always-in-scope: docs/`. A whole-tree scope needs an isolated worktree, so an unscoped dispatch that would run in the shared checkout is refused at dispatch; declare the paths the ticket needs instead.
 
 **A legitimate recursive delete gets refused.** Sidequest blocks a Bash or PowerShell command that recursively deletes the user profile or the `.claude` root, even inside a real cleanup. A home-relative target such as `~/repos/app/build` or `$HOME/repos/app/build` is judged by where it resolves, the same as its absolute spelling, so only the profile, `.claude`, or a parent of either is refused. Point the delete at a specific project or scratchpad path instead.
+
+**Read-only dispatch and report closeout.** A read-only ticket, or an unscoped investigation declaring no repository writes, may dispatch into the shared checkout without whole-tree write scope. A dispatched executor that made no commit and has no dirty declared path or pending submission may close with `done` carrying its report. Actual repository changes still require commit and submit. The inline-work hook gives at most one advisory per session after 25 substantive actions, and skips reads and verification commands.
 
 **A read-only ticket cannot start in a new repository.** Claude reports the checkout choice and keeps the ticket read-only. You do not need to commit notes or change board settings.
 
