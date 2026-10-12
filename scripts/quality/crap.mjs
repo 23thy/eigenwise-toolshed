@@ -59,7 +59,7 @@ export async function sourceMetrics(sourcePath, coverageScripts) {
 function runGit(argumentsList, cwd = repositoryRoot) {
   const result = spawnSync('git', argumentsList, { cwd, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr.trim() || `git ${argumentsList.join(' ')} failed`);
-  return result.stdout.trim();
+  return argumentsList[0] === 'show' ? result.stdout : result.stdout.trim();
 }
 
 function integrationBranch() {
@@ -153,8 +153,9 @@ export async function selectSuites(changedPaths) {
 // node --test refuses to run files while NODE_TEST_CONTEXT says it is already inside a test, so
 // a gate started from a test (its own CLI fixture) must not hand that marker to the suites.
 function spawnSuite(suite, coverageDirectory) {
-  const { NODE_TEST_CONTEXT, ...environment } = process.env;
-  return spawnSync(suite.command, suite.args, { cwd: suite.cwd, env: { ...environment, NODE_V8_COVERAGE: coverageDirectory }, stdio: 'inherit', shell: process.platform === 'win32' });
+  const { NODE_TEST_CONTEXT, NODE_V8_COVERAGE, ...environment } = process.env;
+  const preload = new URL('../../plugins/quality-gate/lib/core.mjs', import.meta.url).href;
+  return spawnSync(suite.command, suite.args, { cwd: suite.cwd, env: { ...environment, QUALITY_GATE_V8_CAPTURE: coverageDirectory, NODE_OPTIONS: `${environment.NODE_OPTIONS || ''} --import=${preload}` }, stdio: 'inherit', shell: process.platform === 'win32' });
 }
 
 async function runSuites(suites, runSuite) {
@@ -190,14 +191,13 @@ async function measureMetrics(changedPaths, coverageDirectory) {
 const UNCLASSIFIED = 'unclassified';
 const CLASS_SECTIONS = [
   ['new', `NEW: not at base, must score below ${THRESHOLD}`],
-  ['modified-raised', `MODIFIED-RAISED: complexity rose since base, must score below ${THRESHOLD} or the added branches move into a new helper that does`],
-  [LEGACY_UNCHANGED, 'LEGACY-UNCHANGED: touched without new complexity, informational, never a failure'],
+  ['modified-raised', `MODIFIED-RAISED: complexity rose since base, must score below ${THRESHOLD}`],
+  [LEGACY_UNCHANGED, 'LEGACY-UNCHANGED: physically modified with equal or lower complexity, must score below 6'],
   [UNCLASSIFIED, 'UNCLASSIFIED: no base comparison (another language, or an unchanged function under --all)'],
 ];
-const ENFORCEMENT_RULE = `only new complexity the change introduced is enforced below ${THRESHOLD} (NEW and MODIFIED-RAISED rows); LEGACY-UNCHANGED rows are informational and never fail`;
+const ENFORCEMENT_RULE = `every new or physically modified owned body must score strictly below ${THRESHOLD}; classifications never exempt changed bodies`;
 
 function metricStatus(metric) {
-  if (metric.classification === LEGACY_UNCHANGED) return 'LEGACY';
   if (metric.unverified) return 'UNVERIFIED';
   return metric.crap >= THRESHOLD ? 'FAIL' : 'PASS';
 }
