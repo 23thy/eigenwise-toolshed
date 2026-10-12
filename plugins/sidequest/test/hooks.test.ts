@@ -125,8 +125,7 @@ function ensurePinnedPluginRoot() {
 ensurePinnedPluginRoot();
 
 const RETIRED_SCOUT = `sidequest-${'scout'}`;
-const GENERIC_AGENT_DENY_REASON = 'sidequest: implementation-agent is a generic Agent, not a Sidequest ticket executor. ' +
-  'For a tiny lookup, use Read, Glob, Grep, or WebFetch inline, not WebSearch. A usable route needs a fresh Board MCP dispatch and its exact returned executor. Board MCP is the lifecycle authority: reload or reconnect Sidequest, then re-dispatch. Do not use a raw Agent or Sidequest CLI fallback. Any delegated work, including a quick investigation, needs a ticket: file a spike (usually codebase-exploration), route it, dispatch it, then spawn the returned executor. The blocked work still gates any dependent action: do not proceed to a PR, merge, publish, or ship until its ticket is filed, dispatched, and closed; rerouting around this block is a violation.';
+const GENERIC_AGENT_DENY_REASON = 'sidequest: implementation-agent requests write or ticket work without a prepared dispatch. Use a native read-only agent for lookups, or dispatch the ticket and spawn its returned executor for writes.';
 
 // Run a hook with the given stdin payload and return the injected
 // additionalContext string (or '' when the hook stays silent).
@@ -821,47 +820,19 @@ test('pre-tool hook: native Explore and approved harness utilities pass through 
   }
 });
 
-test('pre-tool hook: main-session Explore on a routed board nudges twice then denies fan-out', () => {
+test('pre-tool hook: main-session Explore allows read-only fan-out without board interaction', () => {
   const session_id = `explore-fanout-${Date.now()}`;
-  const spawn = (round: number) => runHookOutput(FORCE_BYPASS, {
-    session_id, cwd: BOARD_PATH, tool_name: 'Agent',
-    tool_input: { subagent_type: 'Explore', prompt: `Sweep the hooks directory, angle ${round}.` },
-  });
-  for (const round of [1, 2]) {
-    const out = spawn(round);
-    assert.equal(out.hookSpecificOutput.permissionDecision, undefined, `spawn ${round}`);
-    assert.match(out.hookSpecificOutput.additionalContext, /quick evidence sweeps/);
-    assert.match(out.hookSpecificOutput.additionalContext, /inherits the session model/);
-    assert.match(out.hookSpecificOutput.additionalContext, /codebase-exploration/);
-  }
-  const denied = spawn(3);
-  assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /Explore spawn 3 this session with no board interaction/);
-  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /codebase-exploration/);
-  assert.match(spawn(4).hookSpecificOutput.permissionDecisionReason, /no board interaction/, 'a denied spawn does not consume a pass');
-});
-
-test('pre-tool hook: board interaction lifts the Explore fan-out cap', () => {
-  const session_id = `explore-board-${Date.now()}`;
-  runHookOutput(INLINE_WORK_NUDGE, {
-    session_id, cwd: BOARD_PATH, tool_name: 'mcp__plugin_sidequest_board__claim', tool_input: {},
-  });
-  for (let round = 1; round <= 4; round += 1) {
-    const out = runHookOutput(FORCE_BYPASS, {
+  for (const round of [1, 2, 3, 4]) {
+    assert.equal(runHookOutput(FORCE_BYPASS, {
       session_id, cwd: BOARD_PATH, tool_name: 'Agent',
-      tool_input: { subagent_type: 'Explore', prompt: `Sweep the docs tree, angle ${round}.` },
-    });
-    if (round <= 2) {
-      assert.match(out.hookSpecificOutput.additionalContext, /quick evidence sweeps/, `spawn ${round}`);
-    } else {
-      assert.equal(out, null, `spawn ${round} passes silently after board interaction`);
-    }
+      tool_input: { subagent_type: 'Explore', prompt: `Sweep the hooks directory, angle ${round}.` },
+    }), null);
   }
 });
 
-test('pre-tool hook: denied generic work cannot relaunch as Explore', () => {
+test('pre-tool hook: denied write work cannot relaunch as Explore', () => {
   const session_id = `explore-reroute-${Date.now()}`;
-  const prompt = 'Deep dive: map every hook injection surface and report the guidance gaps.';
+  const prompt = 'Edit every hook injection surface and commit the guidance fixes.';
   const denied = runHookOutput(FORCE_BYPASS, {
     session_id, cwd: BOARD_PATH, tool_name: 'Agent',
     tool_input: { subagent_type: 'general-purpose', description: 'Hook surface deep dive', prompt },
@@ -873,8 +844,8 @@ test('pre-tool hook: denied generic work cannot relaunch as Explore', () => {
     tool_input: { subagent_type: 'Explore', description: 'Hook surface deep dive', prompt: 'Different text entirely.' },
   });
   assert.equal(sameDescription.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(sameDescription.hookSpecificOutput.permissionDecisionReason, /the work, not the agent type/);
-  assert.match(sameDescription.hookSpecificOutput.permissionDecisionReason, /rerouting denied work through Explore is a violation/);
+  assert.match(sameDescription.hookSpecificOutput.permissionDecisionReason, /resumes denied write work/);
+  assert.match(sameDescription.hookSpecificOutput.permissionDecisionReason, /dispatch the write ticket/);
 
   const samePrompt = runHookOutput(FORCE_BYPASS, {
     session_id, cwd: BOARD_PATH, tool_name: 'Agent',
@@ -885,10 +856,29 @@ test('pre-tool hook: denied generic work cannot relaunch as Explore', () => {
   const helper = runHookOutput(FORCE_BYPASS, {
     session_id, cwd: BOARD_PATH, agent_id: 'exec-helper', agent_type: 'sidequest-exec-dispatch',
     tool_name: 'Agent',
-    tool_input: { subagent_type: 'Explore', model: 'haiku', prompt },
+    tool_input: { subagent_type: 'Explore', model: 'haiku', prompt: 'Read a separate source file.' },
   });
   assert.equal(helper.hookSpecificOutput.permissionDecision, undefined, 'executor Explore helpers bypass the fan-out guard');
   assert.equal(helper.hookSpecificOutput.updatedInput.mode, 'bypassPermissions');
+});
+
+test('pre-tool hook: legacy denied lookup records pass but legacy denied writes stay blocked', () => {
+  const session_id = `legacy-denied-${Date.now()}`;
+  const stateFile = path.join(SIDEQUEST_HOME, 'tmp', 'state', `explore-fanout-${encodeURIComponent(session_id)}.json`);
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  fs.writeFileSync(stateFile, JSON.stringify({ deniedWork: [
+    { description: 'lookup calls', promptPrefix: 'find callers' },
+    { description: 'repair calls', promptPrefix: 'edit callers' },
+  ] }));
+  assert.equal(runHookOutput(FORCE_BYPASS, { session_id, tool_name: 'Agent',
+    tool_input: { subagent_type: 'Explore', description: 'Lookup calls', prompt: 'Find callers.' },
+  }), null);
+  for (const subagent_type of ['Explore', 'general-purpose', 'custom-reader']) {
+    const denied = runHookOutput(FORCE_BYPASS, { session_id, tool_name: 'Agent',
+      tool_input: { subagent_type, description: 'Repair calls', prompt: 'Find callers.' },
+    });
+    assert.match(denied.hookSpecificOutput.permissionDecisionReason, /resumes denied write work/);
+  }
 });
 
 test('pre-tool hook: the Explore guard stays out of unrouted and unidentified sessions', () => {
@@ -930,7 +920,7 @@ test('pre-tool hook: a bounded read-only diagnostic probe may self-test dispatch
 
 test('pre-tool hook: arbitrary implementation agents are denied and directed to ticketed routes', () => {
   for (const [subagent_type, prompt] of [
-    ['web-researcher', 'Research the latest routing guidance.'],
+    ['web-researcher', 'Install the latest routing tools.'],
     ['implementation-agent', 'Implement the new flow.'],
   ]) {
     const out = runHookOutput(FORCE_BYPASS, {
@@ -939,18 +929,9 @@ test('pre-tool hook: arbitrary implementation agents are denied and directed to 
     });
     const reason = out.hookSpecificOutput.permissionDecisionReason;
     assert.equal(out.hookSpecificOutput.permissionDecision, 'deny', subagent_type);
-    assert.match(reason, /generic Agent, not a Sidequest ticket executor/);
-    assert.match(reason, /Read, Glob, Grep, or WebFetch inline, not WebSearch/);
-    assert.match(reason, /A usable route needs a fresh Board MCP dispatch and its exact returned executor/);
-    assert.match(reason, /Board MCP is the lifecycle authority: reload or reconnect Sidequest, then re-dispatch/);
-    assert.match(reason, /Do not use a raw Agent or Sidequest CLI fallback/);
-    assert.match(reason, /quick investigation, needs a ticket: file a spike/);
-    assert.match(reason, /codebase-exploration/);
-    assert.match(reason, /route it, dispatch it, then spawn the returned executor/);
-    assert.match(reason, /blocked work still gates any dependent action/);
-    assert.match(reason, /do not proceed to a PR, merge, publish, or ship until its ticket is filed, dispatched, and closed/);
-    assert.match(reason, /rerouting around this block is a violation/);
-    assert.doesNotMatch(reason, /sidequest-diagnostic-probe only|WebSearch is executor-only/);
+    assert.match(reason, /requests write or ticket work without a prepared dispatch/);
+    assert.match(reason, /Use a native read-only agent for lookups/);
+    assert.match(reason, /dispatch the ticket and spawn its returned executor for writes/);
   }
   const mismatch = runHookOutput(FORCE_BYPASS, {
     tool_name: 'Agent',
@@ -1213,8 +1194,7 @@ test('pre-tool hook: executor helpers reject review work and model defaults', ()
     tool_name: 'Agent',
     tool_input: { subagent_type: 'general-purpose', prompt: 'Quick lookup.' },
   });
-  assert.equal(mainThread.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(mainThread.hookSpecificOutput.permissionDecisionReason, /generic Agent, not a Sidequest ticket executor/);
+  assert.equal(mainThread, null);
 });
 
 test('pre-tool hook: a generated per-ticket executor definition owns its ticket by name', () => {
@@ -1744,8 +1724,8 @@ test('pre-tool hook: a marked arbitrary agent is still denied', () => {
   });
   const reason = marked.hookSpecificOutput.permissionDecisionReason;
   assert.equal(marked.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(reason, /generic Agent, not a Sidequest ticket executor/);
-  assert.match(reason, /file a spike/);
+  assert.match(reason, /requests write or ticket work without a prepared dispatch/);
+  assert.match(reason, /native read-only agent/);
   assert.match(reason, /returned executor/);
 });
 
@@ -1964,9 +1944,7 @@ test('usable-route admission keeps unavailable boards inline without a raw Agent
       tool_name: 'Agent',
       tool_input: { subagent_type: 'general-purpose', prompt: 'Inspect this repository.' },
     });
-    assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
-    assert.match(denied.hookSpecificOutput.permissionDecisionReason, /Continue bounded inline work with direct tools/);
-    assert.match(denied.hookSpecificOutput.permissionDecisionReason, /do not create a fake Sidequest or raw Agent lifecycle fallback/);
+    assert.equal(denied, null, 'read-only native work does not depend on an available ticket route');
   } finally {
     store.removeProjectCategory(slug, 'general');
     for (const category of categories) {

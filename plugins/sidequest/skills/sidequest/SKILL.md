@@ -158,8 +158,10 @@ Use read-only recon to pin the improvement, benefit, approach, and boundaries be
 routes select execution capacity, not product decisions. Investigations return compressed findings
 (~1–2k tokens) as comments. Dispatch implementation fresh; executors own their tickets.
 Direct claims require an INLINE-SAFE reason (20+ characters); they cannot legitimize prior investigation.
-Use native `Explore` only for quick sweeps. Deep/fan-out investigation needs `codebase-exploration`;
-only `Explore`, `claude-code-guide`, and `statusline-setup` are ticket-free harness utilities.
+Native `Explore`, `claude-code-guide`, and `Plan` can run read-only work without a ticket.
+General-purpose and custom agents can too when their prompt and description carry no write intent.
+Ticket refs, Sidequest route markers, executor types, and resumed denied write work require a prepared
+dispatch. `statusline-setup` remains a ticket-free harness utility.
 
 **Loop:** spawn a wave, read executor reports and verified submissions, run each ticket's scoped
 verification, then publish with one full-suite gate. Re-plan for the next wave.
