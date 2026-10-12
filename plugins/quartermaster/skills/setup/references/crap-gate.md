@@ -11,6 +11,18 @@ crap = cc^2 * (1 - coverage)^3 + cc
 scores roughly its complexity squared. The classic CRAP ceiling is 30. Quartermaster starts at 6,
 which keeps every function either small or tested.
 
+## What the gate is not
+
+The gate is an on-demand command, and optionally a CI step. Quartermaster never writes a
+UserPromptSubmit, Stop, or PreToolUse hook that blocks a turn on a quality receipt, and a proposal
+never includes one. Mandatory recurring audits and pre-edit quality blocking are outside Quartermaster's
+role. A project found with such a hook gets a one-line removal recommendation in the resupply report,
+naming the exact settings path (for example `.claude/settings.local.json`). The standard stays a
+written rule the agent follows, not a hook that stops every turn.
+
+Scoring compares the session's own changes against the merge base. Files that arrived through a
+merge, rebase, or pull are other people's work and are never demanded.
+
 ## Threshold policy
 
 This gate is opt-in. Approval creates the project config and live rule; a project without them
