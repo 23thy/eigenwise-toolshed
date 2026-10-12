@@ -6,8 +6,7 @@ route implementation by default, batch small same-model tickets, and fan out ove
 in the main skill — this file is the detail on the bigger shapes.
 
 Use the project's configured quality gate, if any. Hold integration for missing quality measurement
-only when a gate is configured. Without one, run the pinned verifier, state once "no quality gate is
-configured for this project; Quartermaster setup can add one", and continue. User rules injected by
+only when a gate is configured. Without one, run the repository's documented quality command (for Toolshed, `npm run quality:crap` in the plugin, which calls the Quality Gate) on the touched bodies. If it cannot produce a measurement, report "complexity/coverage UNVERIFIED: <exact reason from the tool>" and continue. Never recommend Quartermaster setup. User rules injected by
 the host still apply; gate absence alone never holds, parks or marks work UNVERIFIED.
 
 ## Contents

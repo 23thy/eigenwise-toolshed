@@ -53,8 +53,7 @@ already captured compatible coverage. Tooling and reports stay local and uncommi
 Block only on new complexity the change introduced: a touched legacy function whose complexity did not
 rise since the base is reported with its number as informational (a LEGACY row), never as a failure and
 never as a reason to refactor it.
-When none is configured, run the pinned verifier, state once "no quality gate is configured for this
-project; Quartermaster setup can add one", and continue. Absence alone never holds, parks or marks work
+When none is configured, run the repository's documented quality command (for Toolshed, `npm run quality:crap` in the plugin, which calls the Quality Gate) on the touched bodies. If it cannot produce a measurement, report "complexity/coverage UNVERIFIED: <exact reason from the tool>" and continue. Never recommend Quartermaster setup. Absence alone never holds, parks or marks work
 UNVERIFIED. User rules injected by the host still apply.
 
 Before a long run, freeze its inputs and validate source, coverage and executed/source-map byte identity.
