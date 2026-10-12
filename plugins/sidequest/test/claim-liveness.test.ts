@@ -1723,6 +1723,78 @@ test('source provenance accepts unchanged tests from genuine released native pre
   releaseProvenance(ticket);
 });
 
+async function laterProvenanceGeneration(ref: string) {
+  const producer = store.getTicket(slug, ref);
+  const holder = ref + '-later-producer';
+  claimRouted(producer, holder);
+  fs.appendFileSync(path.join(PROJECT_DIR, provenanceFiles[0]), 'module.exports = 2;\n');
+  const committed = await provenanceBoardTool('commit', { ref, by: holder, worktree: PROJECT_DIR, message: 'Later native provenance fixture' });
+  assert.equal(committed.ok, true, JSON.stringify(committed));
+  const commit = git(['rev-parse', 'HEAD']);
+  assert.equal(store.releaseTicket(slug, ref, holder, { status: 'todo', kind: 'handback', reason: 'Later fixture generation', source: 'mcp' }).ok, true);
+  return commit;
+}
+
+test('source provenance matches an archived released generation by its own preparedAt and capture', async () => {
+  const origin = await nativeProvenanceProducer();
+  await laterProvenanceGeneration(origin.ref);
+  const producer = store.getTicket(slug, origin.ref);
+  assert.notEqual(producer.dispatch.preparedAt, origin.preparedAt);
+  const archived = producer.dispatch.attempts.find((attempt: { preparedAt: string }) => attempt.preparedAt === origin.preparedAt);
+  assert.equal(archived.baseCommit.length, 40);
+  assert.deepEqual(archived.declaredFiles, [...provenanceFiles, '.release/unreleased/' + origin.ref + '.md']);
+  assert.deepEqual(archived.sanctionedCommits, [origin.commit]);
+  assert.equal(archived.verificationRequirement.command, provenanceCommand);
+  const ticket = await claimProvenance(provenanceTicket('source provenance retained archived generation'), 'inherited-read-only', [origin]);
+  assert.equal(ticket.dispatch.workProvenance.sources[0].generation.preparedAt, origin.preparedAt);
+  assert.deepEqual(ticket.dispatch.workProvenance.sources[0].generation.sanctionedCommits, [origin.commit]);
+  assert.equal(ticket.dispatch.workProvenance.sources[0].capture.id, origin.captureId);
+  releaseProvenance(ticket);
+});
+
+test('source provenance never uses latest generation ownership for an earlier preparedAt', async () => {
+  const origin = await nativeProvenanceProducer();
+  const latestCommit = await laterProvenanceGeneration(origin.ref);
+  const ticket = provenanceTicket('source provenance latest ownership cannot stand in');
+  assert.throws(() => store.prepareDispatch(slug, ticket.ref, { sharedTree: true, sessionId: 'historical-origin-main', workProvenance: {
+    kind: 'inherited-read-only', sources: [{ ref: origin.ref, preparedAt: origin.preparedAt, commit: latestCommit }] } }, { allowWorkProvenance: true }), /commit lacks native producer ownership/);
+  assert.equal(store.getTicket(slug, ticket.ref).dispatch, undefined);
+});
+
+test('source provenance refuses a historical submitted candidate replaced by a later submission', async () => {
+  const origin = await nativeProvenanceProducer();
+  const latestCommit = await laterProvenanceGeneration(origin.ref);
+  const producer = store.getTicket(slug, origin.ref);
+  const archived = producer.dispatch.attempts.find((attempt: { preparedAt: string }) => attempt.preparedAt === origin.preparedAt);
+  archived.outcome = 'submitted';
+  archived.commit = origin.commit;
+  producer.submission = { commit: latestCommit, base: producer.dispatch.baseCommit,
+    commits: [latestCommit], admittedScope: provenanceFiles };
+  persist(producer);
+  const ticket = provenanceTicket('source provenance historical submitted ownership mismatch');
+  assert.throws(() => store.prepareDispatch(slug, ticket.ref, { sharedTree: true, sessionId: 'historical-submission-main', workProvenance: {
+    kind: 'inherited-read-only', sources: [origin] } }, { allowWorkProvenance: true }),
+  { message: 'work provenance refused: historical submitted generation ' + origin.preparedAt + ' candidate ' + origin.commit + ' differs from current submission ' + latestCommit });
+  assert.equal(store.getTicket(slug, ticket.ref).dispatch, undefined);
+});
+
+test('source provenance names the missing fact and generation for legacy archived attempts', async () => {
+  const origin = await nativeProvenanceProducer();
+  await laterProvenanceGeneration(origin.ref);
+  const producer = store.getTicket(slug, origin.ref);
+  const archived = producer.dispatch.attempts.find((attempt: { preparedAt: string }) => attempt.preparedAt === origin.preparedAt);
+  const retained = structuredClone(archived);
+  const ticket = provenanceTicket('source provenance legacy archive has no inferred facts');
+  for (const field of ['baseCommit', 'declaredFiles', 'sanctionedCommits', 'verificationRequirement', 'tokenPrefix']) {
+    Object.assign(archived, retained);
+    delete archived[field];
+    persist(producer);
+    assert.throws(() => store.prepareDispatch(slug, ticket.ref, { sharedTree: true, sessionId: 'legacy-origin-main', workProvenance: {
+      kind: 'inherited-read-only', sources: [origin] } }, { allowWorkProvenance: true }), { message: 'work provenance refused: producer generation ' + origin.preparedAt + ' missing ' + field });
+    assert.equal(store.getTicket(slug, ticket.ref).dispatch, undefined);
+  }
+});
+
 test('source provenance refuses changed source/test bytes and changed native producer generations', async () => {
   const origin = await nativeProvenanceProducer();
   const ticket = await claimProvenance(provenanceTicket('source provenance exact byte and generation binding'), 'inherited-read-only', [origin]);
