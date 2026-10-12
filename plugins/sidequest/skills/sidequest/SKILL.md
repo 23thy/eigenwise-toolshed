@@ -1,7 +1,7 @@
 ---
 name: sidequest
 description: >-
-  Default for multi-file or multi-step work, even where there is no board yet: the first add creates it. Use for
+  Use for delegated work and board lifecycle; small bounded fixes may stay inline without a ticket. Use for
   tickets, board lifecycle, planning substantial or ambiguous work, and dispatch/integration/recovery.
 ---
 
@@ -19,7 +19,7 @@ matching MCP tools. Read references only when needed:
 - `references/external-trackers.md`, `references/board-features.md`, `references/category-links.md`, `references/ticket-authoring.md`, `references/invocation-contracts.md`.
 - `references/readonly-guidance.md` — candidate reviews, repository audits, shortcut debt, and measurement claims.
 
-## Plan substantial work on the board first
+## Choose one owner before adding ceremony
 
 Before dispatching substantial or ambiguous work, pin a contract; see `user-story`. Check feasibility
 before expensive implementation or tests for substantial/safety-sensitive work
@@ -28,25 +28,14 @@ a plan advisor needs a named architectural risk or contested approach, no mandat
 
 For substantial work:
 
-0. **solo-fit gate.** **SOLO-FIT picks one-executor vs wave; it NEVER means you implement
-   inline.** Small coherent work gets **one ticket** and one executor. A multi-item unpinnable contract
-   needs concurrent read-only investigation tickets, **one investigation ticket per independent item**;
-   findings pin a separate fix wave. One combined ticket is only for exactly one item or a provably single
-   defect. “Feels coupled” is not evidence: file planning first.
-1. **Ticket shape.** For 3+ independently checkable pieces, pin shared types/interfaces, file boundaries
-   and per-piece verification, then dispatch a category-routed wave. **Wave mode REQUIRES a Sidequest
-   story**: file the complete backlog and execution contract under Sidequest's `US-n` grouping.
-   One-ticket mode stays story-less; stories hold shared outcomes/dependencies. Cut along affected
-   store, CLI, MCP, skill/docs and test surfaces. Tickets carry anchors, contract and scoped verify;
-   use directory scope for blast radius (`references/ticket-authoring.md`).
+0. **One owner by default.** A bounded fix the orchestrator can state keeps one owner and a focused check. A small fix in a few files at known locations may run inline without a ticket. Read-only investigations may use native Explore or general-purpose agents without tickets.
+1. **Story or wave only with a reason.** Require 3+ independently checkable pieces and a stated reason for separate owners. Pin shared interfaces, file boundaries and per-piece verification, then file the complete backlog under a Sidequest story. One-ticket mode stays story-less. A review panel needs a named risk for each lens.
 2. **Link dependencies** (`link SQ-4 depends-on SQ-3`); shape a story as design → wave(s) →
    integrate so `ready` serializes the phases.
 3. **File the whole planned wave backlog before dispatching.** Give every ticket scope, dependencies, and
    per-ticket verification; dispatch each ready wave concurrently. Do not drip-file a serial chain.
 
-   **Parallel-first:** Split independent audits, migrations, and reviews into per-item or shard tickets.
-   Dispatch concurrently despite isolated-worktree overlap; large sweeps skim invisibly. Keep
-   sequential/shared-design work together; size shards by items and verify cost.
+   Dispatch independent pieces together only after the story or wave meets that threshold.
 4. **Execute proportionally** — "Route execution down" below.
 
 Trace the real flow, question necessity, then reuse local code, stdlib, native features or installed
@@ -54,7 +43,7 @@ dependencies before fixing the shared root. Prefer measured deletion; avoid hypo
 compulsory extractions and unrelated cleanup. Preserve trust-boundary validation, data-loss prevention,
 accessibility, permissions and immutable candidate/review authority.
 
-Answer direct questions; do operational requests and stated one-line edits to 1–2 named files inline before solo-fit or ticketing. Bounded recon (`Read`, `Glob`, `Grep` on named anchors, one narrow sweep) stays inline; unfamiliar paths or deep investigation go through the live taxonomy.
+Answer direct questions and operational requests inline. Small bounded fixes in a few known files may stay inline without tickets. Read-only investigations may use native Explore or general-purpose agents without tickets.
 
 ### INLINE-SAFE direct work
 
@@ -64,13 +53,9 @@ If inline-safe work was already ticketed, the orchestrator may claim `--direct` 
   assertion string synced after a deliberate reword, byte-checked golden regeneration, or a
   merge-conflict resolution that preserves both sides' intent.
 - Release bookkeeping: release fragments, the cut flow, or closing tickets with evidence.
-- The existing user-directed one-or-two-named-file carve-out above, unchanged.
+- A small bounded fix in a few files at known locations, with a focused check.
 
-`direct-ok` may remain as a user signal, but it gates nothing. Never inline work that needs
-investigation or other-file reading to be confident, adds behavior or an API, or has a failing test
-that does not pinpoint the exact location. "Context already loaded", "small change", and "faster
-myself" are invalid reasons. File a ticket and dispatch its executor instead. The blocked-step and
-never-inline invariants still apply to substantive work.
+`direct-ok` may remain as a user signal, but it gates nothing. Use routed execution when the work exceeds the small bounded path or needs an independent candidate review. Once dispatched, executors keep their claim, scope, verification and submission lifecycle unchanged.
 
 ## MCP is the executor board interface
 

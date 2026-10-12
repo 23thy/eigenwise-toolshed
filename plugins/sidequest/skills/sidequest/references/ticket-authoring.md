@@ -2,6 +2,8 @@
 
 Declare scope by the surfaces a change reaches, not just the first file you found. For a cross-cutting change inside one plugin, declare its `src/lib`, `test`, and, where relevant, `hooks` directories. Use file-granular scope for surgical work where blast-radius control is the point.
 
+A bounded fix defaults to one owner and a focused check. Small fixes in a few files at known locations may run inline without tickets. Read-only investigations may use native Explore or general-purpose agents without tickets. A story or wave requires 3+ independently checkable pieces and a stated reason; a review panel needs a named risk for each lens.
+
 ## Pinned planning contract
 
 Before dispatching a substantial or ambiguous feature, publish one visible planning checkpoint on its
@@ -23,7 +25,7 @@ choices to its executor. It must name:
 
 A settled feature gets one authored contract. Use two or three bounded proposals only when the approach
 is genuinely contested. An exact small edit keeps the lightweight path: record its outcome and oracle,
-then use one ticket.
+then keep one owner, inline when it fits the small bounded path.
 
 For substantial or safety-sensitive changes, do a short architecture/feasibility preflight before
 expensive implementation or tests. Trace shared authority and callers, choose the smallest existing

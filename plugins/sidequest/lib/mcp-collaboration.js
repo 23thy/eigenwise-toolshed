@@ -269,7 +269,7 @@ const tools = [
       properties: {
         ref: { type: "string" },
         project: PROJECT_PROP,
-        sharedTree: { type: "boolean", description: "Use the declared shared checkout only when the spawning runtime is already rooted there. Executors with a live claim cannot use this to dispatch child work." },
+        sharedTree: { type: "boolean", description: "Use the declared shared checkout only when the spawning runtime is already rooted there. Read-only tickets and unscoped investigations declaring no repository writes need no write-scope ruling; whole-tree write scope is never granted here. Executors with a live claim cannot use this to dispatch child work." },
         reducedAgentSchema: { type: "boolean", description: 'Omit name/mode; hook needs agent_id and permission_mode "auto" or "bypassPermissions".' },
         allowRepeatFailure: { type: "boolean" },
         allowUnscoped: { type: "boolean", description: "Give a write ticket with no declared files the whole tree as its write scope (isolated worktree only)." },

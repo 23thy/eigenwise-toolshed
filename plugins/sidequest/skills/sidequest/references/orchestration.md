@@ -34,29 +34,9 @@ not create an investigation by default.
 
 ### Solo-fit gate before decomposition
 
-Apply the inline-safe gate before solo-fit or ticket filing. A user-directed mechanical edit to one or two named files with stated content, including an exact one-line `.gitignore` entry, is inline work: edit it directly, do not file a ticket or spawn an executor.
+A bounded fix the orchestrator can state defaults to one owner and a focused check. Small fixes in a few files at known locations may run inline without tickets. Read-only investigations may use native Explore or general-purpose agents without tickets.
 
-Before filing several tickets, use solo-fit only to choose the dispatch shape. **SOLO-FIT picks
-one-executor vs wave; it NEVER means you implement inline.** File **one ticket and dispatch one
-executor** for small coherent work. A combined ticket is only for exactly one request item or items
-provably one defect.
-
-When a multi-item contract cannot be pinned, file a concurrent read-only investigation wave: **one
-investigation ticket per independent item**, categorized as `codebase-exploration`, `debugging`, or
-`spike-investigation` with `readonly: true`. Each returns a compressed root cause with file:line, proposed fix, verify command,
-and defect status. The orchestrator then pins separate fix contracts from the findings. In isolated
-worktrees, dispatch those fixes in parallel. In a shared-tree project (including Docker mounts of the
-checkout), different-file fixes still get separate tickets but dispatch serially or batched into one
-executor; shared-tree writes are the only reason a fix wave serializes. A one-item unpinnable claim
-still needs a completed exploration/planning ticket naming the interface that resisted a written
-contract, or no written contract surface in the request. “Feels coupled” is not evidence: when unsure,
-file the short planning ticket first.
-
-**Maximize the ready set.** Decompose to maximize the ready set: prefer cuts along disjoint surfaces so more tickets can dispatch together. A cut that forces a serial chain needs a stated reason. In isolated worktrees, same-file overlap alone is not a conflict. A shared runtime resource serializes writes and live reproduction, never read-only investigation; otherwise dispatch in parallel and resolve the rare merge conflict at integration.
-
-Example: three PR review comments in three files → three read-only investigation tickets in one wave →
-the orchestrator pins per-comment fix contracts from the findings → fix wave (parallel in worktrees,
-batched in a shared tree) → one merged-tree gate.
+A story or wave needs 3+ independently checkable pieces and a stated reason for separate owners. Pin shared interfaces and per-piece checks before dispatch. A review panel needs a named risk for each lens. Within an admitted wave, dispatch independent pieces together; shared runtime resources serialize their writes and live reproduction.
 
 After solo-fit chooses wave mode, file the complete planned backlog before dispatching: every planned
 ticket for every wave, each with declared files, dependency links, and per-ticket verify. Then dispatch
@@ -102,14 +82,11 @@ then add them to the spec or split the work further.
 
 ## Inline-safe direct work
 
-Run this check before filing. Do the user-directed 1–2 named-file carve-out inline without creating a ticket; an exact one-line `.gitignore` entry is the canonical case. If a routed ticket already exists, direct work still records a 20+ character reason. Other inline work is limited to a failing integration gate that pinpoints a known small mechanical diff (strict-TS null guard, deliberate assertion-string sync, byte-checked golden regeneration, or merge-conflict resolution preserving both intents) or release bookkeeping (fragment, cut, or evidence closeout). `direct-ok` is optional user signal only, never a gate.
+Before filing, use inline work for small bounded fixes in a few files at known locations, with a focused check. If a routed ticket already exists, direct work records a 20+ character reason. `direct-ok` is optional user signal only.
 
 A direct claim submits without a briefing: commit the candidate, `git update-ref refs/sidequest/<ref> <commit>`, run `node "<sidequest plugin>/lib/verify-capture.js" --project "<project path>" --ticket "<ref>"` from that clean checkout, then `submit`. The wrapper and submit use the ticket's current verify, not an earlier dispatch's pin, and a `verification_capture_required` refusal prints the exact wrapper line.
 
-Route a ticket to an executor for work needing investigation or other-file reading to be confident,
-new behavior or API surface, a failing test that does not pinpoint the location, or any rationale
-like "context already loaded", "small change", or "faster myself". The blocked-step and never-inline
-invariants still apply to substantive work.
+Route larger or uncertain implementation and independent candidate review to an executor. Dispatched executors retain their claim, scope, verification and submission lifecycle.
 
 ## Acceptance evidence and audit gates
 

@@ -1945,9 +1945,13 @@ function retireUnboundDispatchOnly(slug: string, idOrRef: string, opts: Dispatch
   return Object.assign(superseded, { retired: true });
 }
 
+function investigationWithoutRepositoryWrites(ticket: { files?: unknown; description?: string }): boolean {
+  return !normalizeFiles(ticket.files).length && /\bno repository writes\b/i.test(ticket.description || '');
+}
+
 function undeclaredScopeRefusal(slug: string, ticket: StoredRecord, opts: DispatchOptions): string | null {
   const noDeclaredFileScope = unscopedWriteCannotAutoApprove(ticket, {
-    dispatchReadOnly,
+    dispatchReadOnly: (candidate: StoredRecord) => dispatchReadOnly(candidate) || investigationWithoutRepositoryWrites(candidate),
     normalizeFiles,
     autoApproveScope: boardConfig(slug)?.autoApproveScope,
   });
@@ -2320,7 +2324,7 @@ function assertReviewCheckoutIsolation(t: StoredRecord, reviewTargetState: Store
 }
 
 function dispatchIsolation(slug: string, t: StoredRecord, current: StoredRecord, opts: DispatchOptions, effectiveFiles: readonly string[]): DispatchIsolation {
-  const readonly = dispatchReadOnly(t);
+  const readonly = dispatchReadOnly(t) || investigationWithoutRepositoryWrites(t);
   const worktreeIsolation = normalizeWorktreeIsolation(readMeta(slug)?.worktreeIsolation);
   const reviewTargetState = reviewDispatchTarget(slug, t);
   const sharedTree = initialSharedTree(reviewTargetState, worktreeIsolation, requestedSharedTree(opts, current));
@@ -4107,7 +4111,7 @@ function dispatchDelta(slug?: any, ticket?: any) {
       }).trim().split(/\r?\n/).filter(Boolean);
     }
     const committed = commits.length ? commitScope.rangePaths(workspace.root, commits) : [];
-    return { ok: true, workspace, ...workingState, committed };
+    return { ok: true, workspace, ...workingState, committed, commitCount: commits.length };
   } catch (error: any) {
     return { ok: false, reason: 'git_error', message: error?.message || String(error) };
   }

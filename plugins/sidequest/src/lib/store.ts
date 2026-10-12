@@ -2534,7 +2534,7 @@ type ReleaseOptions = {
 };
 type PreparedComment = Readonly<Record<string, unknown>>;
 type ReleaseResult = { ok: boolean; reason?: string; [detail: string]: unknown };
-type CompletionDelta = { ok: false; reason?: string } | { ok: true; committed: string[]; working: string[] };
+type CompletionDelta = { ok: false; reason?: string } | { ok: true; committed: string[]; working: string[]; commitCount?: number };
 type ReleaseBlocker = { kind: string; reason: string; paths?: string[]; newlyChangedPaths?: string[]; preExistingPaths?: string[]; baselineRecorded?: boolean };
 type ReleaseRequest = { slug: string; by: string; opts: ReleaseOptions; releaseComment: PreparedComment | null };
 type ReleaseFacts = {
@@ -2847,9 +2847,15 @@ function claimReleasedRefusal(facts: ReleaseFacts) {
 }
 
 function scopeCloseoutRefusal(request: ReleaseRequest, facts: ReleaseFacts, delta: { completionDelta: CompletionDelta | null; sharedTreeCommittedScope: boolean }) {
-  const unusedReviewScope = boundReviewLeftScopeUnused(facts.dispatch, delta.completionDelta, facts.declaredFiles);
+  const unusedReviewScope = boundReviewLeftScopeUnused(facts.dispatch, delta.completionDelta, facts.declaredFiles)
+    || unchangedRepositoryScope(facts, delta.completionDelta);
   return submissionRequiredRefusal(request, facts, delta.sharedTreeCommittedScope, unusedReviewScope)
     || completionTreeRefusal(request, facts, delta.completionDelta, unusedReviewScope);
+}
+
+function unchangedRepositoryScope(facts: ReleaseFacts, delta: CompletionDelta | null): boolean {
+  if (!delta?.ok || pendingSubmission(facts.t) || delta.commitCount !== 0) return false;
+  return !delta.working.some((file) => commitScope.isInScope(file, facts.declaredFiles));
 }
 
 function submissionRequiredRefusal(request: ReleaseRequest, facts: ReleaseFacts, sharedTreeCommittedScope: boolean, unusedReviewScope: boolean) {
@@ -2859,7 +2865,7 @@ function submissionRequiredRefusal(request: ReleaseRequest, facts: ReleaseFacts,
 }
 
 function closesWithoutSubmission(request: ReleaseRequest, facts: ReleaseFacts, sharedTreeCommittedScope: boolean, unusedReviewScope: boolean): boolean {
-  return provenNoOpCloseout(request, facts, unusedReviewScope) || sharedTreeCommittedScope || facts.activeReadOnlyDispatch || facts.terminalReadOnlyOracle;
+  return provenNoOpCloseout(request, facts, unusedReviewScope) || facts.activeReadOnlyDispatch || facts.terminalReadOnlyOracle;
 }
 
 function provenNoOpCloseout(request: ReleaseRequest, facts: ReleaseFacts, unusedReviewScope: boolean): boolean {
@@ -2874,7 +2880,7 @@ function submissionRequired(t: ReleaseTicket) {
   return {
     ok: false,
     reason: 'submission_required',
-    message: `${t.ref} has routed repository write scope. Its executor must commit and submit verified changes. A read-only dispatch may close with done, but readonly:false selects this write path unless the recorded last executor is read-only. If the ticket contract forbids commits, set workingTreeDelivery:true before dispatch and run it in the shared checkout; done then records its declared working-tree paths and matching pinned verify-capture. A clean declared scope may close as an external-deliverable completion only when the ticket explicitly sets externalDeliverable:true. The orchestrator can set that flag through update during this claim; then, if the pinned requirement has a command, run it through the dispatched verify-capture wrapper for the current dispatch attempt and revision; otherwise supply explicit done --verify evidence for the pinned requirement. Repeat done with that evidence. Dirty or committed declared paths still require commit and submit.`,
+    message: `${t.ref} has repository changes. Commit and submit verified changes. A dispatched executor with no commit, no dirty declared path, and no pending submission may close with done carrying its report. Working-tree deliverables retain their declared paths and verification requirements.`,
     ticket: t,
   };
 }

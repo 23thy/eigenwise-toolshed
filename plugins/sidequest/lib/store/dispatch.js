@@ -1503,9 +1503,12 @@ function createDispatch(dependencies) {
     if (!superseded.ok) throw new Error(`prepare dispatch: ${superseded.message || `${idOrRef} has no unbound dispatch attempt to retire (${superseded.reason}).`}`);
     return Object.assign(superseded, { retired: true });
   }
+  function investigationWithoutRepositoryWrites(ticket) {
+    return !normalizeFiles(ticket.files).length && /\bno repository writes\b/i.test(ticket.description || "");
+  }
   function undeclaredScopeRefusal(slug, ticket, opts) {
     const noDeclaredFileScope = unscopedWriteCannotAutoApprove(ticket, {
-      dispatchReadOnly,
+      dispatchReadOnly: (candidate) => dispatchReadOnly(candidate) || investigationWithoutRepositoryWrites(candidate),
       normalizeFiles,
       autoApproveScope: boardConfig(slug)?.autoApproveScope
     });
@@ -1793,7 +1796,7 @@ function createDispatch(dependencies) {
     if (worktreeWarning) throw new Error(`prepare dispatch: ${t.ref} cannot pin the immutable candidate checkout. ${worktreeWarning}`);
   }
   function dispatchIsolation(slug, t, current, opts, effectiveFiles) {
-    const readonly = dispatchReadOnly(t);
+    const readonly = dispatchReadOnly(t) || investigationWithoutRepositoryWrites(t);
     const worktreeIsolation = normalizeWorktreeIsolation(readMeta(slug)?.worktreeIsolation);
     const reviewTargetState = reviewDispatchTarget(slug, t);
     const sharedTree = initialSharedTree(reviewTargetState, worktreeIsolation, requestedSharedTree(opts, current));
@@ -3293,7 +3296,7 @@ function createDispatch(dependencies) {
         }).trim().split(/\r?\n/).filter(Boolean);
       }
       const committed = commits.length ? commitScope.rangePaths(workspace.root, commits) : [];
-      return { ok: true, workspace, ...workingState, committed };
+      return { ok: true, workspace, ...workingState, committed, commitCount: commits.length };
     } catch (error) {
       return { ok: false, reason: "git_error", message: error?.message || String(error) };
     }

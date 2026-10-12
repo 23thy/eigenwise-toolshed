@@ -2524,8 +2524,12 @@ function claimReleasedRefusal(facts) {
   };
 }
 function scopeCloseoutRefusal(request, facts, delta) {
-  const unusedReviewScope = boundReviewLeftScopeUnused(facts.dispatch, delta.completionDelta, facts.declaredFiles);
+  const unusedReviewScope = boundReviewLeftScopeUnused(facts.dispatch, delta.completionDelta, facts.declaredFiles) || unchangedRepositoryScope(facts, delta.completionDelta);
   return submissionRequiredRefusal(request, facts, delta.sharedTreeCommittedScope, unusedReviewScope) || completionTreeRefusal(request, facts, delta.completionDelta, unusedReviewScope);
+}
+function unchangedRepositoryScope(facts, delta) {
+  if (!delta?.ok || pendingSubmission(facts.t) || delta.commitCount !== 0) return false;
+  return !delta.working.some((file) => commitScope.isInScope(file, facts.declaredFiles));
 }
 function submissionRequiredRefusal(request, facts, sharedTreeCommittedScope, unusedReviewScope) {
   if (!facts.dispatch || !facts.declaredFiles.length) return null;
@@ -2533,7 +2537,7 @@ function submissionRequiredRefusal(request, facts, sharedTreeCommittedScope, unu
   return submissionRequired(facts.t);
 }
 function closesWithoutSubmission(request, facts, sharedTreeCommittedScope, unusedReviewScope) {
-  return provenNoOpCloseout(request, facts, unusedReviewScope) || sharedTreeCommittedScope || facts.activeReadOnlyDispatch || facts.terminalReadOnlyOracle;
+  return provenNoOpCloseout(request, facts, unusedReviewScope) || facts.activeReadOnlyDispatch || facts.terminalReadOnlyOracle;
 }
 function provenNoOpCloseout(request, facts, unusedReviewScope) {
   return request.opts.cleanDeclaredScope === true || Boolean(facts.dispatch?.noOpRelease) || unusedReviewScope;
@@ -2545,7 +2549,7 @@ function submissionRequired(t) {
   return {
     ok: false,
     reason: "submission_required",
-    message: `${t.ref} has routed repository write scope. Its executor must commit and submit verified changes. A read-only dispatch may close with done, but readonly:false selects this write path unless the recorded last executor is read-only. If the ticket contract forbids commits, set workingTreeDelivery:true before dispatch and run it in the shared checkout; done then records its declared working-tree paths and matching pinned verify-capture. A clean declared scope may close as an external-deliverable completion only when the ticket explicitly sets externalDeliverable:true. The orchestrator can set that flag through update during this claim; then, if the pinned requirement has a command, run it through the dispatched verify-capture wrapper for the current dispatch attempt and revision; otherwise supply explicit done --verify evidence for the pinned requirement. Repeat done with that evidence. Dirty or committed declared paths still require commit and submit.`,
+    message: `${t.ref} has repository changes. Commit and submit verified changes. A dispatched executor with no commit, no dirty declared path, and no pending submission may close with done carrying its report. Working-tree deliverables retain their declared paths and verification requirements.`,
     ticket: t
   };
 }
