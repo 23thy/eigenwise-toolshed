@@ -12,7 +12,7 @@ import { measureSource, readOutput } from '../lib/measure.mjs';
 const pluginRoot = fileURLToPath(new URL('../', import.meta.url));
 const corePath = new URL('../lib/core.mjs', import.meta.url).href;
 const analyzer = await createAnalyzer(pluginRoot);
-const { transform } = createRequire(new URL('../../sidequest/package.json', import.meta.url))('esbuild');
+const { transform } = createRequire(import.meta.url)('esbuild');
 
 test('historical export getter cannot cover the idle production body', () => {
   const descriptor = { identity: '<root>/FunctionDeclaration:negativeControlRecoveryGuidance#0', parent: '<root>', name: 'negativeControlRecoveryGuidance', start: 27983, end: 29293 };
