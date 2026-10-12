@@ -127,6 +127,24 @@ function pinnedVerificationRequirement(ticket: any, projectPath: string, verifyE
   return deferred ? Object.freeze({ ...requirement, environment: 'shared' as const }) : requirement;
 }
 
+type ProducerAttemptHistory = {
+  preparedAt?: string; terminalAt?: string; baseCommit?: string; declaredFiles?: readonly string[];
+  sanctionedCommits?: readonly string[]; verificationRequirement?: { command?: string };
+  attempts: Array<{ preparedAt?: string }>;
+};
+
+function retainedAttemptHistory(current: ProducerAttemptHistory) {
+  const attempts = structuredClone(current.attempts);
+  const terminalAttempt = attempts.find(attempt => attempt.preparedAt === current.preparedAt);
+  if (current.terminalAt && terminalAttempt) {
+    Object.assign(terminalAttempt, structuredClone({
+      baseCommit: current.baseCommit, declaredFiles: current.declaredFiles,
+      sanctionedCommits: current.sanctionedCommits, verificationRequirement: current.verificationRequirement,
+    }));
+  }
+  return attempts;
+}
+
 function createDispatch(dependencies: any) {
   const { ARTIFACT_BASELINE_MAX_PATHS, SHARED_TREE_ARTIFACT_MARKER, assertDispatchTransport, assertSidequestInstall, checkSidequestInstall, servingInstall, prepareAttempt, transitionAttempt, attemptDiagnostic, ensurePythonIoEncoding, localAheadOfUpstreamWarning, availableRoute, boardConfig, claimGraceMs, claimIdleMs, claimReclaimable, claimVerification, classifyDispatchFailure, terminalAgentFailure, commitScope, crypto, database, db, dispatchReadOnly, dispatchFilesystemSnapshotPreflight, dispatchBaselineForProject, dispatchVerifyCommandError, dispatchRouteRefusal, dispatchRouteState, effectiveScope, execFileSync, execProjection, fs, getCategory, getStory, homeRoot, integrationTarget, integrationTargetCommit, legacyCategoryForComplexity, listProjects, listTickets, nonRepoExternalOutput, normalizeArtifactRoots, normalizeFiles, normalizeRoute, normalizeWorktreeIsolation, path, hasOriginRemote, pendingSubmission, agentWorktreePath, agentWorktreeCandidates, agentIdFromWorktreePath, resolvedAgentWorktree, preparedDispatchTtlMs, putTicket, readMeta, releaseTerminalClaim, resolveCategoryFallback, resolveCategoryRoute, resolveTicketRoute, resolveExec, stableExecutorName, staleWorktreeCwdWarning, storyExecutionContract, takeSourceRevisionAdapterSwitch, ticketCategory, ticketStorageRow, withTicketLock, normalizeCategoryId, projectRoutingEnabled, routingDisabledMessage, getTicket, dispatchLaunchName, nextDispatchLaunchSeq, spawnDescription, claudeQuotaFailure, canonicalPath, checkoutInstanceIdentity, createWorktreeLease, worktreeResumeDecision, isCanonicalRegisteredWorktree, withTicketLocks, withTicketFileLocks, guardedTransaction, ticketGenerations, changedTicketSince, unclaimedDispatchWorktreeReclaim } = dependencies;
 
@@ -1105,10 +1123,6 @@ function appendDispatchAttempt(state?: any, outcome?: any, source?: any, failure
     // agentId. Review provenance needs to tell those apart.
     bindSource: state.bindSource || null,
     preparedAt: state.preparedAt || null,
-    baseCommit: state.baseCommit,
-    declaredFiles: structuredClone(state.declaredFiles),
-    sanctionedCommits: structuredClone(state.sanctionedCommits),
-    verificationRequirement: structuredClone(state.verificationRequirement),
     launchedAt: state.launchedAt || null,
     boundAt: state.boundAt || null,
     claimedAt: state.claimedAt || null,
@@ -2248,7 +2262,7 @@ function routedRecovery(t: StoredRecord, current: StoredRecord): StoredRecord | 
 
 function priorAttemptHistory(current: StoredRecord) {
   return {
-    attempts: Array.isArray(current?.attempts) ? structuredClone(current.attempts) : [],
+    attempts: Array.isArray(current?.attempts) ? retainedAttemptHistory(current) : [],
     supersededTokens: Array.isArray(current?.supersededTokens) ? current.supersededTokens.slice() : [],
   };
 }

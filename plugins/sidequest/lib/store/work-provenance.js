@@ -106,9 +106,14 @@ function requireSourceFacts(generation, input) {
 function sourceGeneration(producer, input) {
   const dispatch = producer.dispatch;
   requireFact(dispatch !== void 0, "producer has no native generation");
-  const generation = [dispatch, ...(dispatch.attempts ?? []).slice().reverse()].find((candidate) => candidate.preparedAt === input.preparedAt);
+  const { attempts = [] } = dispatch;
+  const generation = [dispatch, ...attempts.slice().reverse()].find((candidate) => candidate.preparedAt === input.preparedAt);
   requireFact(generation !== void 0 && Boolean(generation.terminalAt), "producer generation mismatch");
   requireSourceFacts(generation, input);
+  requireFact(
+    generation === dispatch || generation.outcome !== "submitted" || generation.commit === producer.submission?.commit,
+    `historical submitted generation ${input.preparedAt} candidate ${generation.commit} differs from current submission ${producer.submission?.commit}`
+  );
   requireFact(!producer.claim?.by && !producer.dispatchNonce, "producer is still active");
   requireFact(["released", "submitted"].includes(generation.outcome), "producer must be released preparation or submitted source");
   return generation;

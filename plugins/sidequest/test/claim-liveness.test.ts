@@ -1765,6 +1765,23 @@ test('source provenance never uses latest generation ownership for an earlier pr
   assert.equal(store.getTicket(slug, ticket.ref).dispatch, undefined);
 });
 
+test('source provenance refuses a historical submitted candidate replaced by a later submission', async () => {
+  const origin = await nativeProvenanceProducer();
+  const latestCommit = await laterProvenanceGeneration(origin.ref);
+  const producer = store.getTicket(slug, origin.ref);
+  const archived = producer.dispatch.attempts.find((attempt: { preparedAt: string }) => attempt.preparedAt === origin.preparedAt);
+  archived.outcome = 'submitted';
+  archived.commit = origin.commit;
+  producer.submission = { commit: latestCommit, base: producer.dispatch.baseCommit,
+    commits: [latestCommit], admittedScope: provenanceFiles };
+  persist(producer);
+  const ticket = provenanceTicket('source provenance historical submitted ownership mismatch');
+  assert.throws(() => store.prepareDispatch(slug, ticket.ref, { sharedTree: true, sessionId: 'historical-submission-main', workProvenance: {
+    kind: 'inherited-read-only', sources: [origin] } }, { allowWorkProvenance: true }),
+  { message: 'work provenance refused: historical submitted generation ' + origin.preparedAt + ' candidate ' + origin.commit + ' differs from current submission ' + latestCommit });
+  assert.equal(store.getTicket(slug, ticket.ref).dispatch, undefined);
+});
+
 test('source provenance names the missing fact and generation for legacy archived attempts', async () => {
   const origin = await nativeProvenanceProducer();
   await laterProvenanceGeneration(origin.ref);

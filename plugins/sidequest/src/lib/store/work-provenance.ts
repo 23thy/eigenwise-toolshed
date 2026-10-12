@@ -10,7 +10,7 @@ export type WorkKind = typeof WORK_KINDS[number];
 export type SourceOriginInput = Readonly<{ ref: string; preparedAt: string; commit: string; captureId?: string }>;
 export type WorkDeclaration = Readonly<{ kind: WorkKind; sources: readonly SourceOriginInput[] }>;
 type ProducerDispatch = Readonly<{
-  preparedAt: string; terminalAt?: string; outcome: string; baseCommit: string;
+  preparedAt: string; terminalAt?: string; outcome: string; baseCommit: string; commit?: string;
   declaredFiles: readonly string[]; sanctionedCommits?: readonly string[];
   verificationRequirement?: { command?: string }; tokenPrefix?: string;
 }>;
@@ -90,9 +90,12 @@ function requireSourceFacts(generation: ProducerDispatch, input: SourceOriginInp
 function sourceGeneration(producer: ProvenanceProducer, input: SourceOriginInput): ProducerDispatch {
   const dispatch = producer.dispatch;
   requireFact(dispatch !== undefined, 'producer has no native generation');
-  const generation = [dispatch, ...(dispatch.attempts ?? []).slice().reverse()].find(candidate => candidate.preparedAt === input.preparedAt);
+  const { attempts = [] } = dispatch;
+  const generation = [dispatch, ...attempts.slice().reverse()].find(candidate => candidate.preparedAt === input.preparedAt);
   requireFact(generation !== undefined && Boolean(generation.terminalAt), 'producer generation mismatch');
   requireSourceFacts(generation, input);
+  requireFact(generation === dispatch || generation.outcome !== 'submitted' || generation.commit === producer.submission?.commit,
+    `historical submitted generation ${input.preparedAt} candidate ${generation.commit} differs from current submission ${producer.submission?.commit}`);
   requireFact(!producer.claim?.by && !producer.dispatchNonce, 'producer is still active');
   requireFact(['released', 'submitted'].includes(generation.outcome), 'producer must be released preparation or submitted source');
   return generation;
