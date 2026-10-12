@@ -11,9 +11,10 @@ this file only covers what the schema has no way to say.
   need `command` and `outputTail`, and are refused without them. `kind: oracle` parks the ticket in
   `awaiting-oracle` and the handoff stays visible until `verdict`. `kind: handback` is for refused paths:
   commit the in-scope work first, then name the paths you could not touch.
-- **`add` / `update` verification**: `verifyKind` is one of `suite`, `command`, `document`, `link`,
-  `schema`, `manual`, `attestation`, `review`, or `custom`. `suite` and `command` require a runnable
-  command. The other kinds retain the submitted evidence contract. `verifyKind: attestation` also requires
+- **`add` / `update` verification**: `verifyKind` is one of `suite`, `command`, `typecheck`, `document`,
+  `link`, `schema`, `manual`, `attestation`, `review`, or `custom`. `suite`, `command` and `typecheck` require a
+  runnable command; `typecheck` pins the project's type checker as the oracle for annotation-only work. The other
+  kinds retain the submitted evidence contract. `verifyKind: attestation` also requires
   `verify` in the form `attestation: <attestationArtifact verbatim> | <evidence produced> | <what it showed>`;
   any other shape is refused. `verifyCwd` (`--verify-cwd`) is the directory the command runs from, relative to
   the project root; the capture and the integrate gate both use it. Prefer it to `cd <dir> && ...` for a nested workspace.

@@ -75,7 +75,7 @@ test('published guidance excludes retired instructions', () => {
 });
 
 test('SQ-2731: the negative-control grammar an executor is told matches the guard recovery guidance', () => {
-  const grammar = /failed=<n> failure-kind=<assertion\|import\|collection>/;
+  const grammar = /failed=<n> failure-kind=assertion/;
   assert.match(executorTemplate, grammar);
   assert.match(negativeControlRecoveryGuidance(), grammar);
   assert.doesNotMatch(executorTemplate, /an ImportError or collection error only proves a symbol vanished/);

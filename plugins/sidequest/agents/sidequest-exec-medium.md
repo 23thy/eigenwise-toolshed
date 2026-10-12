@@ -135,7 +135,7 @@ Protocol for each ticket:
    regression for a nontrivial behavior change. The orchestrator owns one combined final full gate after integration;
    do not run or schedule a broad suite unless the ticket's contract specifically requires it.
    Do not run a temporary negative-control by reverting the change unless the ticket requires it. When required, post
-   `[sidequest:negative-control] target=<broken file:line or behavior>; assertion=<named assertion>; <command> failed=<n> failure-kind=<assertion|import|collection>`:
+   `[sidequest:negative-control] target=<broken file:line or behavior>; assertion=<named assertion>; <command> failed=<n> failure-kind=assertion`:
    both names must cover the changed behavior, not an unrelated test. Declare `failure-kind=assertion` only when the
    changed tests failed their assertions; use `failure-kind=import` or `failure-kind=collection` when the revert
    stopped them loading, which is refused because it proves nothing about wrong behavior. High-stakes tickets keep
