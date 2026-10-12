@@ -1022,7 +1022,7 @@ function negativeControlRefusal(ticket: NegativeControlRefusalTicket, result: Ne
     zero_failures: 'failed=0 means tests passed against the pre-change code and do not test the change',
     unreported_tests: 'the negative control did not report these added or modified tests: ' + result.tests?.join(', '),
     short_waiver: 'a negative-control waiver needs a reason of at least 20 characters',
-    malformed_marker: 'the negative-control marker has an invalid format',
+    malformed_marker: 'found negative-control marker line "' + result.markerLine + '", but the number was not where it was expected',
     wrong_author: 'a negative control was recorded by "' + result.by + '", but the current claim holder is "' + ticket.claim?.by + '"',
     missing: 'new behavior needs a claim-holder negative control',
   };
@@ -1032,7 +1032,7 @@ function negativeControlRefusal(ticket: NegativeControlRefusalTicket, result: Ne
     zero_failures: 'negative_control_zero_failures', unreported_tests: 'negative_control_test_required', short_waiver: 'negative_control_waiver_too_short',
   };
   return { ok: false as const, reason: reasons[result.kind] ?? 'negative_control_required',
-    message: ticket.ref + ' completion refused: ' + (messages[result.kind] ?? messages.missing) + '. ' + negativeControlRecoveryGuidance() };
+    message: ticket.ref + ' completion refused: ' + (messages[result.kind] ?? messages.missing) + '; ' + negativeControlRecoveryGuidance() };
 }
 
 function completionScope(slug?: any, ticket?: any) {
@@ -1096,9 +1096,10 @@ function ownedControlCheck(ticket: ProvenanceCompletionTicket, delta: unknown, o
 
 function completionTreeCheck(slug: string, ticket: ProvenanceCompletionTicket, opts?: { explicitNoOp?: boolean }) {
   const facts = completionWorkFacts(slug, ticket);
-  if (!facts.ok || !facts.applicable) return facts;
-  const emptyWithoutDeclaration = !facts.changedPaths.length && opts?.explicitNoOp !== true;
-  if (emptyWithoutDeclaration && facts.provenance?.kind !== 'inherited-read-only') return emptyScopeCompletion(ticket, facts.declaredFiles);
+  if (!facts.ok) return facts;
+  if (!facts.applicable) return facts;
+  const emptyWithoutDeclaration = [!facts.changedPaths.length, opts?.explicitNoOp !== true].every(Boolean);
+  if ([emptyWithoutDeclaration, facts.provenance?.kind !== 'inherited-read-only'].every(Boolean)) return emptyScopeCompletion(ticket, facts.declaredFiles);
   const control = ownedControlCheck(ticket, facts.delta, facts.ownedPaths);
   if (!control.ok) return control;
   return { ok: true, applicable: true, changedPaths: facts.changedPaths, ownedPaths: facts.ownedPaths,

@@ -42,7 +42,7 @@ function preparedVerificationRequirement(ticket, projectPath) {
   return verificationRequirement({
     kind,
     evidence: legacyWithoutVerifier ? "legacy project verifier was not recorded" : recorded || artifact || void 0,
-    command: ["suite", "command", "typecheck"].includes(kind) ? recorded || void 0 : void 0,
+    command: ["suite", "command"].includes(kind) ? recorded || void 0 : void 0,
     artifact: ticket?.executorAttestationArtifact,
     suite
   });

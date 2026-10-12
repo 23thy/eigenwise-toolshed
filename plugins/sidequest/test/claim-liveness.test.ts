@@ -442,13 +442,9 @@ test('a shared-tree write dispatch refuses an empty verification completion unle
   assert.equal(noOp.ok, true);
   assert.equal(store.getTicket(slug, ticket.ref).claim.verification, undefined);
 
-  const doneRefused = store.completeTicket(slug, ticket.ref, 'tree-check-executor', { body: 'No repository change.' });
-  assert.equal(doneRefused.ok, false);
-  assert.equal(doneRefused.reason, 'submission_required');
-  assert.equal(store.completeTicket(slug, ticket.ref, 'tree-check-executor', {
-    body: 'No repository change.',
-    cleanDeclaredScope: true,
-  }).ok, true);
+  const completed = store.completeTicket(slug, ticket.ref, 'tree-check-executor', { body: 'No repository change.' });
+  assert.equal(completed.ok, true);
+  assert.equal(completed.ticket.status, 'done');
 });
 
 test('verification completions accept statuses, evidence, and the legacy bare marker', () => {
@@ -570,7 +566,7 @@ test('a mixed source and test diff needs a claim-holder negative control before 
   });
   assert.equal(missing.ok, false);
   assert.equal(missing.reason, 'negative_control_required');
-  assert.match(missing.message, /Revert the non-test changes, run the changed tests/);
+  assert.match(missing.message, /Revert the changed source while keeping changed tests importable/);
 
   const submission = store.submitTicket(slug, ticket.ref, by, { commit: COMMIT });
   assert.equal(submission.ok, false);
@@ -645,7 +641,7 @@ test('a mixed source and test diff needs a claim-holder negative control before 
   });
   assert.equal(importError.reason, 'negative_control_import_error');
   assert.match(importError.message, /recorded negative control failed with an ImportError/);
-  assert.match(importError.message, /only an assertion failure proves they catch wrong behavior/);
+  assert.match(importError.message, /import or collection failures never prove assertion failure/);
 
   assert.equal(store.addComment(slug, ticket.ref, {
     by,
@@ -1800,7 +1796,7 @@ test('source provenance refuses forged producer generation and unrelated immutab
 
 test('annotation-only work executes the author-pinned typecheck oracle without a control', async () => {
   const files = ['lib/annotation.js', 'test/annotation.test.js'];
-  const command = process.execPath + ' ' + require.resolve('typescript/bin/tsc') + ' --allowJs --checkJs --noEmit --skipLibCheck lib/annotation.js';
+  const command = JSON.stringify(process.execPath) + ' ' + JSON.stringify(path.join(path.dirname(require.resolve('typescript/package.json')), 'bin', 'tsc')) + ' --allowJs --checkJs --noEmit --skipLibCheck lib/annotation.js';
   const ticket = store.createTicket(slug, { title: 'annotation oracle uses the typechecker', category: 'coding.normal', files,
     description: 'Where: annotation fixture. Contract: typecheck annotations without a behavior control. Verify: the real TypeScript compiler checks the annotated source.',
     executorVerify: command, executorVerifyKind: 'typecheck', source: 'mcp' });
@@ -1831,4 +1827,22 @@ test('docs and fixture-only frozen work record their completion exemptions', asy
     git(['add', ...provenanceFiles]);
     git(['commit', '-m', 'nonbehavior completion fixture ' + kind]);
   }
+});
+
+
+test('author-chosen oracles preserve executable and evidence-only requirements', () => {
+  const { verificationRequirement } = require('../lib/kernel/verification.js');
+  for (const kind of ['command', 'typecheck']) {
+    assert.deepEqual(verificationRequirement({ kind, evidence: 'node --version' }), {
+      kind, command: 'node --version', evidenceContract: 'node --version',
+    });
+  }
+  for (const kind of ['document', 'schema', 'link', 'custom', 'review']) {
+    assert.deepEqual(verificationRequirement({ kind, evidence: 'checked artifact' }), { kind, evidenceContract: 'checked artifact' });
+  }
+  assert.deepEqual(verificationRequirement({ kind: 'manual', evidence: 'manual: inspected artifact' }), { kind: 'manual', evidenceContract: 'inspected artifact' });
+  assert.deepEqual(verificationRequirement({ kind: 'attestation', artifact: 'proof.json' }), { kind: 'attestation', artifact: 'proof.json', evidenceContract: 'attestation evidence for proof.json' });
+  assert.deepEqual(verificationRequirement({ kind: 'suite', command: 'node --test' }), { kind: 'suite', command: 'node --test', evidenceContract: 'named suite output' });
+  const suite = { name: 'fixture', cwd: '.', command: 'node --test' };
+  assert.deepEqual(verificationRequirement({ kind: 'command', suite }), { kind: 'suite', suite: { ...suite, setup: null }, command: 'cd . && node --test', evidenceContract: 'suite fixture output' });
 });

@@ -201,11 +201,11 @@ ${evidence.outputTail}`;
     return { kind: "complete", noOp: false };
   }
   function verificationCompletionCheck(slug, ticket, comment) {
-    const event = verificationComment(comment?.body);
-    if (!event || event.kind !== "complete") return { ok: true };
-    if (ticket?.claim?.by === comment?.by && (event.status === "failed_suite" || event.status === "could_not_run")) return { ok: true };
+    const event = verificationComment(comment.body);
+    if (event?.kind !== "complete") return { ok: true };
+    if ([ticket?.claim?.by === comment.by, ["failed_suite", "could_not_run"].includes(String(event.status))].every(Boolean)) return { ok: true };
     const completion = completionTreeCheck(slug, ticket, { explicitNoOp: event.noOp });
-    if (completion.ok && completion.negativeControl?.startsWith("not_required(")) {
+    if (completion.negativeControl?.startsWith("not_required(")) {
       comment.body += "\nnegativeControl: " + completion.negativeControl;
     }
     return completion;

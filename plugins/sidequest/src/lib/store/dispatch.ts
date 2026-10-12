@@ -81,7 +81,7 @@ function preparedVerificationRequirement(ticket: any, projectPath: string) {
   return verificationRequirement({
     kind,
     evidence: legacyWithoutVerifier ? 'legacy project verifier was not recorded' : recorded || artifact || undefined,
-    command: ['suite', 'command', 'typecheck'].includes(kind) ? recorded || undefined : undefined,
+    command: ['suite', 'command'].includes(kind) ? recorded || undefined : undefined,
     artifact: ticket?.executorAttestationArtifact,
     suite,
   });

@@ -662,7 +662,7 @@ const tools = [
           type: "object",
           description: "Sealed replacement.",
           properties: {
-            verifyKind: { type: "string", enum: ["command", "suite", "typecheck"] },
+            verifyKind: { type: "string", enum: ["command", "suite"] },
             verify: { type: "string", maxLength: store.EXECUTOR_VERIFY_MAX }
           },
           required: ["verifyKind", "verify"]
@@ -681,7 +681,7 @@ const tools = [
       if (verificationSupersession !== void 0) {
         const verifyKind = String(verificationSupersession?.verifyKind || "").trim().toLowerCase();
         const verify = String(verificationSupersession?.verify || "").trim();
-        if (!args.deliveryCommit || args.integration || args.abandonSubmission || !["command", "suite", "typecheck"].includes(verifyKind)) {
+        if (!args.deliveryCommit || args.integration || args.abandonSubmission || !["command", "suite"].includes(verifyKind)) {
           return mutationAck(slug, {
             ok: false,
             reason: "invalid_verification_supersession",
