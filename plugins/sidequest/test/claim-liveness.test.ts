@@ -1678,6 +1678,16 @@ async function claimProvenance(ticket: { ref: string }, kind: string, sources: r
   return store.getTicket(slug, ticket.ref);
 }
 
+async function nativeProvenanceVerification(ticket: { ref: string }) {
+  const previousContext = process.env.NODE_TEST_CONTEXT;
+  delete process.env.NODE_TEST_CONTEXT;
+  try {
+    return await require('../lib/verify-capture.js').runCapturedVerification(provenanceCommand, { project: PROJECT_DIR, ticket: ticket.ref }, PROJECT_DIR);
+  } finally {
+    if (previousContext !== undefined) process.env.NODE_TEST_CONTEXT = previousContext;
+  }
+}
+
 async function nativeProvenanceProducer() {
   const producer = provenanceTicket('source provenance native released preparation');
   claimRouted(producer, producer.ref + '-producer');
@@ -1686,8 +1696,10 @@ async function nativeProvenanceProducer() {
   const committed = await provenanceBoardTool('commit', { ref: producer.ref, by: producer.ref + '-producer', worktree: PROJECT_DIR, message: 'Native provenance fixture' });
   assert.equal(committed.ok, true, JSON.stringify(committed));
   const candidate = git(['rev-parse', 'HEAD']);
-  const capture = await require('../lib/verify-capture.js').runCapturedVerification(provenanceCommand, { project: PROJECT_DIR, ticket: producer.ref }, PROJECT_DIR);
+  const capture = await nativeProvenanceVerification(producer);
   assert.equal(capture.capture.status, 'passed');
+  assert.match(capture.capture.outputTail, /owned value equals two/);
+  assert.match(capture.capture.outputTail, /# pass 1/);
   assert.equal(capture.recorded.ok, true, JSON.stringify(capture.recorded));
   assert.equal(store.releaseTicket(slug, producer.ref, producer.ref + '-producer', { status: 'todo', kind: 'handback', reason: 'Synthetic unmeasured preparation', source: 'mcp' }).ok, true);
   const released = store.getTicket(slug, producer.ref);
@@ -1720,7 +1732,7 @@ test('source provenance refuses changed source/test bytes and changed native pro
   const location = path.join(PROJECT_DIR, provenanceFiles[0]);
   const exact = fs.readFileSync(location);
   fs.writeFileSync(location, 'module.exports = 1;\n');
-  const defective = require('node:child_process').spawnSync(process.execPath, ['--test', provenanceFiles[1]], { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10_000 });
+  const defective = require('node:child_process').spawnSync(process.execPath, ['--test', provenanceFiles[1]], { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10_000, env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
   assert.equal(defective.status, 1);
   assert.match(defective.stdout, /ERR_ASSERTION/);
   assert.match(defective.stdout, /owned value equals two/);
@@ -1737,7 +1749,7 @@ test('source provenance distinguishes GREEN behavior-preserving refactors from n
   const refactor = await claimProvenance(provenanceTicket('source provenance declared GREEN refactor'), 'behavior-preserving-refactor');
   fs.writeFileSync(path.join(PROJECT_DIR, provenanceFiles[0]), 'module.exports = 1 + 1;\n');
   fs.appendFileSync(path.join(PROJECT_DIR, provenanceFiles[1]), 'test("refactored value stays two", () => assert.equal(require("../lib/provenance"), 2));\n');
-  execFileSync(process.execPath, ['--test', provenanceFiles[1]], { cwd: PROJECT_DIR, stdio: 'pipe', timeout: 10_000 });
+  execFileSync(process.execPath, ['--test', provenanceFiles[1]], { cwd: PROJECT_DIR, stdio: 'pipe', timeout: 10_000, env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
   assert.equal(provenanceCompletion(refactor).ok, true);
   releaseProvenance(refactor);
   git(['add', ...provenanceFiles]);
@@ -1748,7 +1760,7 @@ test('source provenance distinguishes GREEN behavior-preserving refactors from n
   assert.equal(provenanceCompletion(behavior).reason, 'negative_control_required');
   const exact = fs.readFileSync(path.join(PROJECT_DIR, provenanceFiles[0]));
   fs.writeFileSync(path.join(PROJECT_DIR, provenanceFiles[0]), 'module.exports = 2;\n');
-  const defective = require('node:child_process').spawnSync(process.execPath, ['--test', provenanceFiles[1]], { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10_000 });
+  const defective = require('node:child_process').spawnSync(process.execPath, ['--test', provenanceFiles[1]], { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10_000, env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
   assert.equal(defective.status, 1);
   assert.match(defective.stdout, /ERR_ASSERTION/);
   assert.match(defective.stdout, /owned value equals three/);
