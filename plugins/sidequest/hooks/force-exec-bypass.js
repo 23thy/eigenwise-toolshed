@@ -1534,160 +1534,198 @@ ${message.trim()}`
   } catch (_) {
   }
 }
-function main() {
-  const input = readStdin();
-  if (!input) return;
+function nonAgentToolGuard(toolName) {
+  if (toolName === "SendMessage") return guardLateSteer;
+  if (WRITE_TOOLS.has(toolName)) return guardHelperWrite;
+  if (SHELL_TOOLS.has(toolName)) return guardReadOnlyShell;
+  return null;
+}
+function decidedBeforeAgentAdmission(input) {
   const toolName = stringField(input, "tool_name");
-  if (guardTerminalExecutor(input)) return;
-  if (guardOwnTicketDispatch(input)) return;
-  if (executorLiveClaimMutationRefusal(input)) return;
-  if (toolName === "SendMessage") {
-    guardLateSteer(input);
-    return;
-  }
-  if (WRITE_TOOLS.has(toolName)) {
-    guardHelperWrite(input);
-    return;
-  }
-  if (SHELL_TOOLS.has(toolName)) {
-    guardReadOnlyShell(input);
-    return;
-  }
-  if (toolName !== "Agent") return;
-  const toolInput = toolInputOf(input);
-  if (!toolInput) return;
-  const type = canonicalExecutorName(String(toolInput.subagent_type || ""));
-  const classification = classifyExecutor(type);
+  if (guardTerminalExecutor(input) || guardOwnTicketDispatch(input) || executorLiveClaimMutationRefusal(input)) return true;
+  const toolGuard = nonAgentToolGuard(toolName);
+  if (toolGuard) toolGuard(input);
+  return toolName !== "Agent";
+}
+function decidedForHelperOrPassThroughAgent({ input, toolInput, type, classification }) {
   if (isSubagentCaller(input) && !isCurrentExecutor(classification)) {
     rewriteExecutorHelper(input, toolInput, type);
-    return;
+    return true;
   }
-  if (PASS_THROUGH_AGENT_TYPES.has(type)) {
-    if (type === "Explore") guardMainSessionExplore(input, toolInput);
-    return;
-  }
-  if (classification.kind === "diagnostic") {
-    if (!isDiagnosticProbe(type, toolInput)) {
-      writeDeny("PreToolUse", diagnosticProbeDenyReason());
-      return;
-    }
-    writeToolUpdate({ ...toolInput, mode: "bypassPermissions", run_in_background: false });
-    return;
-  }
-  const isDispatchExecutor = classification.kind === "codex_dispatch" || classification.kind === "read_only_codex_dispatch";
-  const admission = dispatchAdmission(input);
-  if (isCurrentExecutor(classification) && (admission.status === "routing-disabled" || admission.status === "no-usable-route")) {
+  if (!PASS_THROUGH_AGENT_TYPES.has(type)) return false;
+  if (type === "Explore") guardMainSessionExplore(input, toolInput);
+  return true;
+}
+function admitOrRefuseDiagnosticProbe(type, toolInput) {
+  if (isDiagnosticProbe(type, toolInput)) writeToolUpdate({ ...toolInput, mode: "bypassPermissions", run_in_background: false });
+  else writeDeny("PreToolUse", diagnosticProbeDenyReason());
+}
+function refusedForMissingExecutorRoute(type, classification, admission) {
+  if (admission.status !== "routing-disabled" && admission.status !== "no-usable-route") return false;
+  if (isCurrentExecutor(classification)) {
     writeDeny("PreToolUse", "sidequest: this project has no usable executor route. Continue only bounded inline work, or restore routing and an available category route before a fresh Board MCP dispatch.");
-    return;
+    return true;
   }
-  if (!isCurrentExecutor(classification) && !type.startsWith("sidequest-") && (admission.status === "routing-disabled" || admission.status === "no-usable-route")) {
-    writeDeny("PreToolUse", "sidequest: this project has no usable executor route. Continue bounded inline work with direct tools; do not create a fake Sidequest or raw Agent lifecycle fallback.");
-    return;
+  if (type.startsWith("sidequest-")) return false;
+  writeDeny("PreToolUse", "sidequest: this project has no usable executor route. Continue bounded inline work with direct tools; do not create a fake Sidequest or raw Agent lifecycle fallback.");
+  return true;
+}
+function routeMismatchRefusal(route) {
+  return `sidequest: ticket resolved route is ${route?.model || "unavailable"} / ${route?.effort || "unavailable"}. Re-run dispatch and pass its spawn unchanged.`;
+}
+function routeMarkerMatches(markers, route) {
+  if (markers.length !== 1) return false;
+  const [marker] = markers;
+  return marker?.model === (route.marker ?? route.model) && marker.effort === route.effort;
+}
+function refusedRouteMarkerMismatch(input, route) {
+  if (route && routeMarkerMatches(dispatchRouteMarkers(input), route)) return false;
+  writeDeny("PreToolUse", routeMismatchRefusal(route));
+  return true;
+}
+function refusedPreparedDispatchSpawn({ input, toolInput, type }, preparedSpawn) {
+  if (!preparedSpawn || !hasExactPreparedBriefing(toolInput.prompt, preparedSpawn) || type !== preparedSpawn.executor) {
+    writeDeny("PreToolUse", "sidequest: dispatch executor requires the exact prepared FIRST action briefing command and executor. Re-run dispatch and pass its spawn unchanged.");
+    return true;
   }
-  const dispatchValidation = preparedDispatchValidation(input);
-  if (isDispatchExecutor && dispatchValidation.status !== "valid") {
+  return refusedRouteMarkerMismatch(input, preparedSpawn.route);
+}
+function refusedPreparedDispatch(request, dispatchValidation) {
+  const { kind } = request.classification;
+  if (kind !== "codex_dispatch" && kind !== "read_only_codex_dispatch") return false;
+  if (dispatchValidation.status !== "valid") {
     writeDeny("PreToolUse", dispatchValidation.status === "stale" ? "sidequest: dispatch briefing command is stale or drifted. Re-run dispatch and pass its spawn unchanged." : "sidequest: dispatch executor requires the exact prepared FIRST action briefing command. Re-run dispatch and pass its spawn unchanged.");
-    return;
+    return true;
   }
-  const preparedSpawn = dispatchValidation.spawn;
-  const preparedRoute = preparedSpawn?.route;
-  const markers = dispatchRouteMarkers(input);
-  if (isDispatchExecutor) {
-    if (!preparedSpawn || !hasExactPreparedBriefing(toolInput.prompt, preparedSpawn) || type !== preparedSpawn.executor) {
-      writeDeny("PreToolUse", "sidequest: dispatch executor requires the exact prepared FIRST action briefing command and executor. Re-run dispatch and pass its spawn unchanged.");
-      return;
-    }
-    const route = preparedRoute;
-    const expectedMarker = route?.marker ?? route?.model;
-    if (!route || markers.length !== 1 || markers[0]?.model !== expectedMarker || markers[0]?.effort !== route.effort) {
-      writeDeny("PreToolUse", `sidequest: ticket resolved route is ${route?.model || "unavailable"} / ${route?.effort || "unavailable"}. Re-run dispatch and pass its spawn unchanged.`);
-      return;
-    }
+  return refusedPreparedDispatchSpawn(request, dispatchValidation.spawn);
+}
+function refusedGenericAgent({ input, toolInput, type, classification }, admission) {
+  if (isCurrentExecutor(classification)) return false;
+  if (!type.startsWith("sidequest-") && admission.status === "routed") recordDeniedGenericWork(input, toolInput);
+  writeDeny("PreToolUse", agentDenyReason(input, type, classification));
+  return true;
+}
+function routedExecutorSpawn(request) {
+  const admission = dispatchAdmission(request.input);
+  if (refusedForMissingExecutorRoute(request.type, request.classification, admission)) return null;
+  const dispatchValidation = preparedDispatchValidation(request.input);
+  if (refusedPreparedDispatch(request, dispatchValidation) || refusedGenericAgent(request, admission) || refusedSubagentModelOverride()) return null;
+  return { ...request, admission, preparedSpawn: dispatchValidation.spawn };
+}
+function admittedExecutorSpawn(input) {
+  const toolInput = toolInputOf(input);
+  if (!toolInput) return null;
+  const type = canonicalExecutorName(String(toolInput.subagent_type || ""));
+  const request = { input, toolInput, type, classification: classifyExecutor(type) };
+  if (decidedForHelperOrPassThroughAgent(request)) return null;
+  if (request.classification.kind === "diagnostic") {
+    admitOrRefuseDiagnosticProbe(type, toolInput);
+    return null;
   }
-  if (!isCurrentExecutor(classification)) {
-    if (!type.startsWith("sidequest-") && admission.status === "routed") recordDeniedGenericWork(input, toolInput);
-    writeDeny("PreToolUse", agentDenyReason(input, type, classification));
-    return;
-  }
+  return routedExecutorSpawn(request);
+}
+function refusedSubagentModelOverride() {
   const subagentOverride = String(process.env.CLAUDE_CODE_SUBAGENT_MODEL || "").trim();
-  if (subagentOverride) {
-    writeDeny(
-      "PreToolUse",
-      `sidequest: CLAUDE_CODE_SUBAGENT_MODEL="${subagentOverride}" is set — it overrides every sidequest executor's routed model (a Codex route would silently run on a Claude model; builtins collapse to one route), defeating routing. Unset it before spawning sidequest executors.`
-    );
-    return;
-  }
-  if (preparedSpawn?.continuationWorktree && Object.hasOwn(toolInput, "isolation") && !isSubagentCaller(input)) {
-    writeDeny(
-      "PreToolUse",
-      `sidequest: ${preparedSpawn.ref} continues the retained checkout ${preparedSpawn.continuationWorktree}, so its prepared spawn carries no isolation field. Spawn it unchanged: an added isolation asks the harness to create a checkout the board cannot bind, and the Agent call fails before the executor starts.`
-    );
-    return;
-  }
-  const reducedAgentSchema = preparedSpawn?.reducedAgentSchema === true;
+  if (!subagentOverride) return false;
+  writeDeny(
+    "PreToolUse",
+    `sidequest: CLAUDE_CODE_SUBAGENT_MODEL="${subagentOverride}" is set — it overrides every sidequest executor's routed model (a Codex route would silently run on a Claude model; builtins collapse to one route), defeating routing. Unset it before spawning sidequest executors.`
+  );
+  return true;
+}
+function refusedContinuationIsolation({ input, toolInput, preparedSpawn }) {
+  if (!preparedSpawn?.continuationWorktree || !Object.hasOwn(toolInput, "isolation") || isSubagentCaller(input)) return false;
+  writeDeny(
+    "PreToolUse",
+    `sidequest: ${preparedSpawn.ref} continues the retained checkout ${preparedSpawn.continuationWorktree}, so its prepared spawn carries no isolation field. Spawn it unchanged: an added isolation asks the harness to create a checkout the board cannot bind, and the Agent call fails before the executor starts.`
+  );
+  return true;
+}
+function permissionCorrectedInput({ input, toolInput, type }, reducedAgentSchema) {
   const permissionFields = spawnPermissionFields(reducedAgentSchema, type);
   const updatedInput = {
     ...toolInput,
     ...permissionFields,
     ...!reducedAgentSchema && isSubagentCaller(input) ? { run_in_background: true } : {}
   };
-  if (reducedAgentSchema) delete updatedInput.name;
   if (!permissionFields.mode) delete updatedInput.mode;
   if (isSubagentCaller(input)) delete updatedInput.isolation;
-  const corrections = [];
-  if (preparedSpawn?.description && toolInput.description !== preparedSpawn.description) {
-    updatedInput.description = preparedSpawn.description;
-    corrections.push("description");
-  }
-  if (preparedSpawn && !reducedAgentSchema && toolInput.name !== preparedSpawn.name) {
-    updatedInput.name = preparedSpawn.name;
-    corrections.push("name");
-  }
+  return updatedInput;
+}
+function preparedSpawnCorrections({ toolInput, preparedSpawn }, updatedInput, reducedAgentSchema) {
+  if (!preparedSpawn) return [];
+  const preparedFields = [];
+  if (preparedSpawn.description) preparedFields.push(["description", preparedSpawn.description]);
+  if (!reducedAgentSchema) preparedFields.push(["name", preparedSpawn.name]);
+  const differingFields = preparedFields.filter(([field, value]) => toolInput[field] !== value);
+  for (const [field, value] of differingFields) updatedInput[field] = value;
+  return differingFields.map(([field]) => field);
+}
+function launchAgentNameFor({ input, toolInput, preparedSpawn }) {
   const requestedAgentName = typeof toolInput.name === "string" ? toolInput.name : null;
-  const launchAgentName = preparedSpawn?.name || requestedAgentName || dispatchAgentName(input);
-  if (launchAgentName && !reducedAgentSchema) updatedInput.name = launchAgentName;
-  const preparedCorrection = correctionMessage(corrections);
-  if (FRONTMATTER_MODEL_KINDS.has(classification.kind)) {
-    const hadModel = Object.prototype.hasOwnProperty.call(toolInput, "model");
-    if (hadModel) delete updatedInput.model;
-    recordAuthoritativeLaunch(input, type, launchAgentName);
-    const messages = [
-      preparedCorrection,
-      hadModel ? `sidequest: removed the Agent model override for ${type}; its frontmatter pin selects the routed backend.` : null
-    ].filter((message) => Boolean(message));
-    writeToolUpdate(updatedInput, messages.join(" "));
-    return;
-  }
-  const hasModel = Object.prototype.hasOwnProperty.call(toolInput, "model") && toolInput.model != null && toolInput.model !== "";
-  if (!hasModel) {
-    const result2 = resolveStampedModel(input);
-    if (result2.status === "ok" && result2.model) {
-      updatedInput.model = result2.model;
-      recordAuthoritativeLaunch(input, type, launchAgentName);
-      writeToolUpdate(updatedInput, [
-        preparedCorrection,
-        `sidequest: ${type} spawned without a model — injected "${result2.model}" from ${result2.refs.join(", ")}'s resolved category route. Always pass model: exec.model on Claude routes.`
-      ].filter(Boolean).join(" "));
-      return;
-    }
-    writeDeny("PreToolUse", denyReason(result2, type));
-    return;
-  }
+  return preparedSpawn?.name || requestedAgentName || dispatchAgentName(input);
+}
+function correctedSpawnInput(spawn) {
+  const reducedAgentSchema = spawn.preparedSpawn?.reducedAgentSchema === true;
+  const updatedInput = permissionCorrectedInput(spawn, reducedAgentSchema);
+  const corrections = preparedSpawnCorrections(spawn, updatedInput, reducedAgentSchema);
+  const launchAgentName = launchAgentNameFor(spawn);
+  if (reducedAgentSchema) delete updatedInput.name;
+  else if (launchAgentName) updatedInput.name = launchAgentName;
+  return { updatedInput, launchAgentName, preparedCorrection: correctionMessage(corrections) };
+}
+function launchWithFrontmatterModel({ input, toolInput, type }, { updatedInput, launchAgentName, preparedCorrection }) {
+  const hadModel = Object.prototype.hasOwnProperty.call(toolInput, "model");
+  if (hadModel) delete updatedInput.model;
+  recordAuthoritativeLaunch(input, type, launchAgentName);
+  const messages = [
+    preparedCorrection,
+    hadModel ? `sidequest: removed the Agent model override for ${type}; its frontmatter pin selects the routed backend.` : null
+  ].filter((message) => Boolean(message));
+  writeToolUpdate(updatedInput, messages.join(" "));
+}
+function launchWithInjectedModel({ input, type }, { updatedInput, launchAgentName, preparedCorrection }) {
   const result = resolveStampedModel(input);
-  if (admission.status === "routed" && (result.status === "no-refs" || result.status === "ticket-not-found")) {
+  if (result.status !== "ok" || !result.model) {
     writeDeny("PreToolUse", denyReason(result, type));
     return;
   }
-  if (result.status === "ok" && result.model !== toolInput.model) {
-    recordAuthoritativeLaunch(input, type, launchAgentName);
-    writeToolUpdate(updatedInput, [
-      preparedCorrection,
-      `sidequest: ${type} was spawned with model "${String(toolInput.model)}" but ${result.refs.join(", ")} resolves to "${result.model}" — kept the caller's value; confirm the cap is deliberate.`
-    ].filter(Boolean).join(" "));
+  updatedInput.model = result.model;
+  recordAuthoritativeLaunch(input, type, launchAgentName);
+  writeToolUpdate(updatedInput, [
+    preparedCorrection,
+    `sidequest: ${type} spawned without a model — injected "${result.model}" from ${result.refs.join(", ")}'s resolved category route. Always pass model: exec.model on Claude routes.`
+  ].filter(Boolean).join(" "));
+}
+function callerModelLaunchMessage(result, { toolInput, type }, preparedCorrection) {
+  if (result.status !== "ok" || result.model === toolInput.model) return preparedCorrection;
+  return [
+    preparedCorrection,
+    `sidequest: ${type} was spawned with model "${String(toolInput.model)}" but ${result.refs.join(", ")} resolves to "${result.model}" — kept the caller's value; confirm the cap is deliberate.`
+  ].filter(Boolean).join(" ");
+}
+function launchWithCallerModel(spawn, { updatedInput, launchAgentName, preparedCorrection }) {
+  const result = resolveStampedModel(spawn.input);
+  if (spawn.admission.status === "routed" && (result.status === "no-refs" || result.status === "ticket-not-found")) {
+    writeDeny("PreToolUse", denyReason(result, spawn.type));
     return;
   }
-  recordAuthoritativeLaunch(input, type, launchAgentName);
-  writeToolUpdate(updatedInput, preparedCorrection);
+  recordAuthoritativeLaunch(spawn.input, spawn.type, launchAgentName);
+  writeToolUpdate(updatedInput, callerModelLaunchMessage(result, spawn, preparedCorrection));
+}
+function stampSpawnModel(spawn, corrected) {
+  const { toolInput } = spawn;
+  const callerChoseModel = Object.prototype.hasOwnProperty.call(toolInput, "model") && toolInput.model != null && toolInput.model !== "";
+  if (FRONTMATTER_MODEL_KINDS.has(spawn.classification.kind)) launchWithFrontmatterModel(spawn, corrected);
+  else if (callerChoseModel) launchWithCallerModel(spawn, corrected);
+  else launchWithInjectedModel(spawn, corrected);
+}
+function main() {
+  const input = readStdin();
+  if (!input || decidedBeforeAgentAdmission(input)) return;
+  const spawn = admittedExecutorSpawn(input);
+  if (!spawn || refusedContinuationIsolation(spawn)) return;
+  stampSpawnModel(spawn, correctedSpawnInput(spawn));
 }
 try {
   main();
