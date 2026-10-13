@@ -32,12 +32,19 @@ function runtimeModule(name) {
   return import_node_path.default.join(pluginRoot(), "lib", `${name}.js`);
 }
 
-// src/hooks/shared/worktree-sweep.ts
-var import_node_child_process2 = require("node:child_process");
-var import_node_fs4 = __toESM(require("node:fs"));
-var import_promises = require("node:fs/promises");
-var import_node_os3 = __toESM(require("node:os"));
-var import_node_path4 = __toESM(require("node:path"));
+// src/hooks/sweep-worktrees.ts
+var import_node_path6 = __toESM(require("node:path"));
+
+// src/hooks/shared/sweep-flight.ts
+var import_node_crypto2 = __toESM(require("node:crypto"));
+var import_node_fs3 = __toESM(require("node:fs"));
+
+// src/hooks/shared/sweep-handoff.ts
+var import_node_child_process = require("node:child_process");
+var import_node_crypto = __toESM(require("node:crypto"));
+var import_node_fs2 = __toESM(require("node:fs"));
+var import_node_os = __toESM(require("node:os"));
+var import_node_path2 = __toESM(require("node:path"));
 
 // src/hooks/shared/input.ts
 var import_node_fs = __toESM(require("node:fs"));
@@ -73,11 +80,6 @@ function stringField(input, ...names) {
 }
 
 // src/hooks/shared/sweep-handoff.ts
-var import_node_child_process = require("node:child_process");
-var import_node_crypto = __toESM(require("node:crypto"));
-var import_node_fs2 = __toESM(require("node:fs"));
-var import_node_os = __toESM(require("node:os"));
-var import_node_path2 = __toESM(require("node:path"));
 var EMPTY_SWEEP_PROGRESS = {
   phase: "idle",
   candidates: 0,
@@ -160,13 +162,42 @@ function appendReport(cwd, notices) {
   writeReport(cwd, [...drainReport(cwd) || [], ...notices]);
 }
 
-// src/lib/worktree-sweep-lock.ts
-var import_node_fs3 = __toESM(require("node:fs"));
-var import_node_os2 = __toESM(require("node:os"));
+// src/hooks/shared/sweep-flight.ts
 var import_node_path3 = __toESM(require("node:path"));
+function readOwner(file) {
+  try {
+    const match = import_node_fs3.default.readFileSync(file, "utf8").match(/^(\d+):([a-f0-9-]{36})$/);
+    return match ? { pid: Number(match[1]), token: match[2] || "" } : null;
+  } catch {
+    return null;
+  }
+}
+function flightFile(cwd) {
+  return reportFile(cwd).replace(/\.json$/, ".flight");
+}
+function releaseSweepFlight(cwd, token) {
+  const file = flightFile(cwd);
+  if (readOwner(file)?.token === token) import_node_fs3.default.rmSync(file, { force: true });
+}
+function sweepFlightOwned(cwd, token) {
+  const owner = readOwner(flightFile(cwd));
+  return owner?.token === token && owner.pid === process.pid;
+}
+
+// src/hooks/shared/worktree-sweep.ts
+var import_node_child_process2 = require("node:child_process");
+var import_node_fs5 = __toESM(require("node:fs"));
+var import_promises = require("node:fs/promises");
+var import_node_os3 = __toESM(require("node:os"));
+var import_node_path5 = __toESM(require("node:path"));
+
+// src/lib/worktree-sweep-lock.ts
+var import_node_fs4 = __toESM(require("node:fs"));
+var import_node_os2 = __toESM(require("node:os"));
+var import_node_path4 = __toESM(require("node:path"));
 function sweepLockFile() {
-  const home = String(process.env.SIDEQUEST_HOME || "").trim() || import_node_path3.default.join(import_node_os2.default.homedir(), ".claude", "sidequest");
-  return import_node_path3.default.join(home, "worktree-sweep.lock");
+  const home = String(process.env.SIDEQUEST_HOME || "").trim() || import_node_path4.default.join(import_node_os2.default.homedir(), ".claude", "sidequest");
+  return import_node_path4.default.join(home, "worktree-sweep.lock");
 }
 function processAlive(pid) {
   try {
@@ -179,15 +210,15 @@ function processAlive(pid) {
 function lockHolderAlive(file) {
   let holder = 0;
   try {
-    holder = Number(import_node_fs3.default.readFileSync(file, "utf8"));
+    holder = Number(import_node_fs4.default.readFileSync(file, "utf8"));
   } catch (_) {
   }
   return Number.isInteger(holder) && holder > 0 && processAlive(holder);
 }
 function createSweepLock(file) {
   try {
-    import_node_fs3.default.mkdirSync(import_node_path3.default.dirname(file), { recursive: true });
-    import_node_fs3.default.writeFileSync(file, String(process.pid), { flag: "wx" });
+    import_node_fs4.default.mkdirSync(import_node_path4.default.dirname(file), { recursive: true });
+    import_node_fs4.default.writeFileSync(file, String(process.pid), { flag: "wx" });
     return "acquired";
   } catch (error) {
     return error?.code === "EEXIST" ? "held" : "unwritable";
@@ -195,13 +226,13 @@ function createSweepLock(file) {
 }
 function removeStaleSweepLock(file) {
   try {
-    if (!lockHolderAlive(file)) import_node_fs3.default.rmSync(file, { force: true });
+    if (!lockHolderAlive(file)) import_node_fs4.default.rmSync(file, { force: true });
   } catch (_) {
   }
 }
 function releaseSweepLock(file) {
   try {
-    if (import_node_fs3.default.readFileSync(file, "utf8") === String(process.pid)) import_node_fs3.default.rmSync(file, { force: true });
+    if (import_node_fs4.default.readFileSync(file, "utf8") === String(process.pid)) import_node_fs4.default.rmSync(file, { force: true });
   } catch (_) {
   }
 }
@@ -267,7 +298,7 @@ function referencesWorktree(command, worktreePath) {
 }
 function worktreeRemovalFailureNotice(failure, options = {}) {
   const notice = `could not remove ${failure.path || "a git entry"}: ${failure.message}`;
-  if ((options.platform ?? process.platform) !== "win32" || !failure.path || !(options.existsSync || import_node_fs4.default.existsSync)(failure.path)) return notice;
+  if ((options.platform ?? process.platform) !== "win32" || !failure.path || !(options.existsSync || import_node_fs5.default.existsSync)(failure.path)) return notice;
   const processes = (options.listProcesses || windowsProcesses)().filter((entry) => referencesWorktree(entry.command, failure.path));
   if (!processes.length) return notice;
   const details = processes.map((entry) => {
@@ -278,20 +309,20 @@ function worktreeRemovalFailureNotice(failure, options = {}) {
   return `${notice}. Processes still using it: ${details.join("; ")}. End those PIDs and re-run the sweep.`;
 }
 function stateFile() {
-  const home = String(process.env.SIDEQUEST_HOME || "").trim() || import_node_path4.default.join(import_node_os3.default.homedir(), ".claude", "sidequest");
-  return import_node_path4.default.join(home, "worktree-sweep-sessions.json");
+  const home = String(process.env.SIDEQUEST_HOME || "").trim() || import_node_path5.default.join(import_node_os3.default.homedir(), ".claude", "sidequest");
+  return import_node_path5.default.join(home, "worktree-sweep-sessions.json");
 }
 function readState() {
   try {
-    return JSON.parse(import_node_fs4.default.readFileSync(stateFile(), "utf8"));
+    return JSON.parse(import_node_fs5.default.readFileSync(stateFile(), "utf8"));
   } catch (_) {
     return {};
   }
 }
 function writeState(state) {
   try {
-    import_node_fs4.default.mkdirSync(import_node_path4.default.dirname(stateFile()), { recursive: true });
-    import_node_fs4.default.writeFileSync(stateFile(), JSON.stringify(state), "utf8");
+    import_node_fs5.default.mkdirSync(import_node_path5.default.dirname(stateFile()), { recursive: true });
+    import_node_fs5.default.writeFileSync(stateFile(), JSON.stringify(state), "utf8");
   } catch (_) {
   }
 }
@@ -302,15 +333,15 @@ function projectCommand(project) {
   return `node "${pluginRoot()}/bin/sidequest.js" board-config --project "${project.path}" --integration-branch <branch>`;
 }
 function sessionWorktreePath(start) {
-  const resolved = import_node_path4.default.resolve(start);
+  const resolved = import_node_path5.default.resolve(start);
   let candidate = resolved;
   for (; ; ) {
     try {
-      if (import_node_fs4.default.existsSync(import_node_path4.default.join(candidate, ".git"))) return candidate;
+      if (import_node_fs5.default.existsSync(import_node_path5.default.join(candidate, ".git"))) return candidate;
     } catch (_) {
       return resolved;
     }
-    const parent = import_node_path4.default.dirname(candidate);
+    const parent = import_node_path5.default.dirname(candidate);
     if (parent === candidate) return resolved;
     candidate = parent;
   }
@@ -402,7 +433,7 @@ async function sweepWorktrees(data, includeKnownProjects) {
   for (const project of projects) {
     const isCurrentProject = project.slug === current.slug;
     try {
-      await (0, import_promises.stat)(import_node_path4.default.join(project.path, ".git"));
+      await (0, import_promises.stat)(import_node_path5.default.join(project.path, ".git"));
     } catch (_) {
       continue;
     }
@@ -505,9 +536,31 @@ async function sessionEndSweep(data) {
     unregisterSweepSession(data);
   }
 }
+function workerDeadlineMilliseconds() {
+  const configured = Number(process.env.SIDEQUEST_SWEEP_WORKER_DEADLINE_MS);
+  return Number.isFinite(configured) && configured > 0 ? Math.min(configured, 6e4) : 6e4;
+}
+async function superviseSweep(cwd, token) {
+  if (!sweepFlightOwned(cwd, token)) return;
+  try {
+    const { runOwnedPhase } = require(import_node_path6.default.join(pluginRoot(), "scripts", "owned-process-tree.js"));
+    const result = await runOwnedPhase({
+      command: process.execPath,
+      args: [import_node_path6.default.join(pluginRoot(), "hooks", "sweep-worktrees.js"), "--cwd", cwd, "--session", argument("session")],
+      cwd,
+      env: process.env,
+      timeoutMilliseconds: workerDeadlineMilliseconds()
+    });
+    if (result.timedOut) writeReport(cwd, ["sidequest: worktree sweep reached its worker deadline; owned process-tree cleanup was requested."]);
+    if (result.cleanupError) throw new Error(result.cleanupError);
+  } finally {
+    releaseSweepFlight(cwd, token);
+  }
+}
 async function main() {
   const cwd = argument("cwd") || process.cwd();
   const data = { cwd, session_id: argument("session") };
+  if (argument("supervise")) return superviseSweep(cwd, argument("supervise"));
   if (argument("mode") === "session-end") return sessionEndSweep(data);
   writeReport(cwd, await sessionStartMaintenance(data));
 }
