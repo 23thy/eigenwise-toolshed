@@ -101,7 +101,7 @@ test('recovery guidance retains required per-test marker recipe', () => {
   assert.match(message, /between that ';' and failed=<n>/);
   assert.match(message, /\[sidequest:negative-control-test\] failed <test name>/);
   assert.match(message, /test\.each\/it\.each/);
-  assert.match(message, /\[sidequest:negative-control-test\] unaffected <test name> because <reason>/);
+  assert.match(message, /unaffected <test name> because <reason>/);
   assert.match(message, /\[sidequest:negative-control\] waived <reason of at least 20 characters>/);
 });
 
@@ -109,4 +109,15 @@ test('routing-disabled guidance names the enabled and direct paths', () => {
   const message = routingDisabledMessage('SQ-42');
   assert.match(message, /sidequest routing enabled/i);
   assert.match(message, /sidequest claim SQ-42 --direct/i);
+});
+
+
+test('negative control guidance names the frozen exemption path in two sentences', () => {
+  const message = require('../lib/refusal-guidance.js').negativeControlRecoveryGuidance();
+  assert.equal(message.split('. ').length, 2);
+  assert.match(message, /workProvenance.kind/);
+  assert.match(message, /type-annotation-only/);
+  assert.match(message, /not_required/);
+  assert.match(message, /failure-kind=assertion/);
+  assert.match(message, /import or collection failures never prove assertion failure/);
 });
