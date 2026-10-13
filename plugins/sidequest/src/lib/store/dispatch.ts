@@ -3519,21 +3519,27 @@ function recordNativeCheckoutBinding(slug: string, ticket: CompositionTicket, st
     repository: response.repository, worktree: response.worktree };
 }
 
-function freshNativeCheckoutBinding(slug: string, ticketId: string, request: NativeCheckoutBindingRequest): NativeCheckoutBindingResult {
+// Null when a sibling hook took this reservation after the caller's snapshot was read.
+function freshNativeCheckoutBinding(slug: string, ticketId: string, request: NativeCheckoutBindingRequest): NativeCheckoutBindingResult | null {
   const ticket: CompositionTicket = getTicket(slug, ticketId);
   const state: NativeCheckoutCreation = dispatchState(ticket);
-  if (!dispatchCreationCandidate(state, request.sessionId)) return { ok: false, reason: 'already_bound' };
+  if (!dispatchCreationCandidate(state, request.sessionId)) return null;
   if (request.attempt && request.attempt !== state.preparedAt) return { ok: false, reason: 'stale_attempt' };
   return retainedCompositionCheckoutRefusal(ticket, request.worktree)
     ?? recordNativeCheckoutBinding(slug, ticket, state, request);
 }
 
+// Sibling hooks spawned in one message read the same snapshot and race for its first reservation. The loser used to
+// refuse `already_bound` and kill its spawn while a sibling reservation was still free, leaving that sibling's
+// executor without any checkout binding (GH-406), so a reservation taken meanwhile is skipped instead.
 function bindAvailableNativeCheckout(slug: string, request: NativeCheckoutBindingRequest, tickets: readonly CompositionTicket[]): NativeCheckoutBindingResult {
-  const candidate = tickets.find(ticket => dispatchCreationCandidate(dispatchState(ticket), request.sessionId));
-  if (candidate) return dependencies.withCompositionGenerationLock(slug, candidate.id,
-    () => freshNativeCheckoutBinding(slug, candidate.id, request));
+  for (const candidate of tickets.filter(ticket => dispatchCreationCandidate(dispatchState(ticket), request.sessionId))) {
+    const bound: NativeCheckoutBindingResult | null = dependencies.withCompositionGenerationLock(slug, candidate.id,
+      () => freshNativeCheckoutBinding(slug, candidate.id, request));
+    if (bound) return bound;
+  }
   if (unlaunchedSessionDispatch(slug, request.sessionId)) return { ok: false, reason: 'dispatch_launch_unrecorded' };
-  const candidates = tickets.map(candidate => ({ candidate, state: dispatchState(candidate) })).filter(candidate => Boolean(candidate.state));
+  const candidates = listTickets(slug).map((candidate: CompositionTicket) => ({ candidate, state: dispatchState(candidate) })).filter((candidate: { state: unknown }) => Boolean(candidate.state));
   return { ...unavailableWorktreeBinding(slug, candidates, request.sessionId, request.worktree), ok: false };
 }
 
