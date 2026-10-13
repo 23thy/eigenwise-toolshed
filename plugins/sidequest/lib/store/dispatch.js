@@ -4197,6 +4197,16 @@ function createDispatch(dependencies) {
   function agentDispatchWorktree(ref, state) {
     return { ref, worktree: String(state.worktree), outcome: state.outcome || null, terminalAt: state.terminalAt || null };
   }
+  function unboundUnclaimedLaunch(ticket, state) {
+    return state.outcome === "launched" && !state.boundAt && !ticket.claim?.by;
+  }
+  function creationStillReserving(ticket, state) {
+    const now = Date.now();
+    return worktreeProvisioningInFlight(state) && unclaimedRetirement(ticket, state, now).retirableAt > now;
+  }
+  function lostSessionLaunch(ticket, state, sessionId) {
+    return state?.sessionId === String(sessionId) && unboundUnclaimedLaunch(ticket, state) && !creationStillReserving(ticket, state);
+  }
   function reconcileLaunchedDispatches(sessionId, opts) {
     const reconciled = [];
     if (!sessionId) return { ok: true, reconciled };
@@ -4204,13 +4214,11 @@ function createDispatch(dependencies) {
     for (const project of listProjects({ all: true })) {
       for (const ticket of listTickets(project.slug)) {
         const state = dispatchState(ticket);
-        if (!state || state.sessionId !== String(sessionId) || state.outcome !== "launched" || state.boundAt || ticket.claim && ticket.claim.by) continue;
+        if (!lostSessionLaunch(ticket, state, sessionId)) continue;
         const res = withTicketLock(project.slug, ticket.id, () => {
           const t = getTicket(project.slug, ticket.id);
           const current = dispatchState(t);
-          if (!current || current.sessionId !== String(sessionId) || current.outcome !== "launched" || current.boundAt || t.claim && t.claim.by) {
-            return { ok: false };
-          }
+          if (!lostSessionLaunch(t, current, sessionId)) return { ok: false };
           setDispatchTerminal(t, "failed", source, { slug: project.slug });
           t.dispatchNonce = null;
           t.dispatchExecutor = null;

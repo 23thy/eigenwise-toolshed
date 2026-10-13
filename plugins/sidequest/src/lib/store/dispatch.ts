@@ -5344,6 +5344,23 @@ function agentDispatchWorktree(ref: string, state: any) {
   return { ref, worktree: String(state.worktree), outcome: state.outcome || null, terminalAt: state.terminalAt || null };
 }
 
+// A bound agent has a durable runtime identity; only its terminal hook or claim lifecycle may retire it.
+function unboundUnclaimedLaunch(ticket: StoredRecord, state: StoredRecord) {
+  return state.outcome === 'launched' && !state.boundAt && !ticket.claim?.by;
+}
+
+// Between its reservation and its provisioning stamp a WorktreeCreate hook is still running. Retiring it there
+// made its own completion stamp find no launched attempt, so a healthy first spawn failed with
+// dispatch_binding_unavailable and its retry was refused (GH-532). It waits for the retirement authority instead.
+function creationStillReserving(ticket: StoredRecord, state: StoredRecord) {
+  const now = Date.now();
+  return worktreeProvisioningInFlight(state) && unclaimedRetirement(ticket, state, now).retirableAt > now;
+}
+
+function lostSessionLaunch(ticket: StoredRecord, state: StoredRecord | undefined, sessionId: string) {
+  return state?.sessionId === String(sessionId) && unboundUnclaimedLaunch(ticket, state) && !creationStillReserving(ticket, state);
+}
+
 function reconcileLaunchedDispatches(sessionId?: any, opts?: any) {
   const reconciled: any[] = [];
   if (!sessionId) return { ok: true, reconciled };
@@ -5351,14 +5368,11 @@ function reconcileLaunchedDispatches(sessionId?: any, opts?: any) {
   for (const project of listProjects({ all: true })) {
     for (const ticket of listTickets(project.slug)) {
       const state = dispatchState(ticket);
-      // A bound agent has a durable runtime identity; only its terminal hook or claim lifecycle may retire it.
-      if (!state || state.sessionId !== String(sessionId) || state.outcome !== 'launched' || state.boundAt || (ticket.claim && ticket.claim.by)) continue;
+      if (!lostSessionLaunch(ticket, state, sessionId)) continue;
       const res = withTicketLock(project.slug, ticket.id, () => {
         const t = getTicket(project.slug, ticket.id);
         const current = dispatchState(t);
-        if (!current || current.sessionId !== String(sessionId) || current.outcome !== 'launched' || current.boundAt || (t.claim && t.claim.by)) {
-          return { ok: false };
-        }
+        if (!lostSessionLaunch(t, current, sessionId)) return { ok: false };
         setDispatchTerminal(t, 'failed', source, { slug: project.slug });
         t.dispatchNonce = null;
         t.dispatchExecutor = null;

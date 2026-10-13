@@ -3141,6 +3141,61 @@ test('a WorktreeCreate that fails before its checkout exists records the attempt
   }
 });
 
+function reservedCreation(label: string) {
+  const ticket = store.createTicket(slug, { title: `GH-532 fixture ${label}`, category: 'codebase-exploration', files: ['README.md'] });
+  const sessionId = `${label}-session`;
+  const prepared = store.prepareDispatch(slug, ticket.ref, { sessionId });
+  assert.equal(store.recordDispatchLaunch(slug, ticket.ref, {
+    token: prepared.token, executor: prepared.ticket.dispatchExecutor, sessionId, agentName: label,
+  }).ok, true);
+  const bound = store.bindDispatchWorktreeCreation(slug, sessionId, worktrees.namedWorktreePath(PROJECT, label));
+  assert.equal(bound.ok, true);
+  execFileSync('git', ['worktree', 'add', '-b', `worktree-${label}`, bound.worktree, bound.baseline], { cwd: PROJECT, windowsHide: true, stdio: 'ignore' });
+  return { ticket, sessionId, worktree: bound.worktree as string };
+}
+
+// GH-532. The orchestrator's SessionStart reconcile retired a launch whose WorktreeCreate was still between its
+// reservation and its completion stamp, so the hook's completion and recovery both answered
+// dispatch_binding_unavailable and the spawn failed with no executor.
+test('GH-532: a SessionStart reconcile during WorktreeCreate leaves the creation to complete', () => {
+  const label = `gh532-live-${process.pid}-${Date.now()}`;
+  const creation = reservedCreation(label);
+  try {
+    const reconciled = store.reconcileLaunchedDispatches(creation.sessionId, { source: 'session-start' }).reconciled;
+    assert.deepEqual(reconciled, [], 'a creation still inside its WorktreeCreate is not a lost launch');
+    completeCheckoutCreation(creation.sessionId, creation.worktree);
+    assert.equal(store.getTicket(slug, creation.ticket.ref).dispatch.outcome, 'launched');
+  } finally {
+    store.releaseTicket(slug, creation.ticket.ref, 'gh532-cleanup', { status: 'todo', source: 'test', force: true });
+    removeWorktreeBranch(creation.worktree, `worktree-${label}`);
+  }
+});
+
+test('GH-532: a creation whose completion was lost is retired past the authority deadline and the next dispatch binds', () => {
+  const label = `gh532-lost-${process.pid}-${Date.now()}`;
+  const creation = reservedCreation(label);
+  const retryName = `${label}-retry`;
+  const retryWorktree = worktrees.namedWorktreePath(PROJECT, retryName);
+  try {
+    const reconciled = withoutRetirementGrace(() => store.reconcileLaunchedDispatches(creation.sessionId, { source: 'session-start' }).reconciled);
+    assert.deepEqual(reconciled, [creation.ticket.ref], 'a creation silent past the idle backstop is a lost launch');
+    assert.equal(store.completeDispatchWorktreeCreation(slug, creation.sessionId, creation.worktree,
+      creationGeneration(slug, creation.sessionId, creation.worktree)).reason, 'dispatch_binding_unavailable');
+
+    const next = store.prepareDispatch(slug, creation.ticket.ref, { sessionId: `${retryName}-session` });
+    assert.equal(store.recordDispatchLaunch(slug, creation.ticket.ref, {
+      token: next.token, executor: next.ticket.dispatchExecutor, sessionId: `${retryName}-session`, agentName: retryName,
+    }).ok, true);
+    const spawned = createWorktree(`${retryName}-session`, retryName);
+    assert.equal(spawned.ok, true, spawned.output);
+    assert.equal(worktrees.canonicalPath(store.getTicket(slug, creation.ticket.ref).dispatch.worktree), worktrees.canonicalPath(retryWorktree));
+  } finally {
+    store.releaseTicket(slug, creation.ticket.ref, 'gh532-cleanup', { status: 'todo', source: 'test', force: true });
+    removeWorktreeBranch(retryWorktree, `worktree-${retryName}`);
+    removeWorktreeBranch(creation.worktree, `worktree-${label}`);
+  }
+});
+
 // SQ-3139. Two reservations from one session whose launches cross: the first executor's WorktreeCreate binds the
 // second reservation, so each record names the other ticket's executor until a token claim settles it.
 function sq3139CrossedWave(label: string, roles = ['one', 'two']) {

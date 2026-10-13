@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync, spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { runInThisContext } from 'node:vm';
 import { createHash } from 'node:crypto';
 
 // The sweep now also enumerates and reclaims stray directories under the worktree
@@ -1493,6 +1495,76 @@ test('a sweep reads git status four trees at a time and gives up on a hung read 
     }
     fs.rmSync(repository, { recursive: true, force: true });
     fs.rmSync(shimDirectory, { recursive: true, force: true });
+  }
+});
+
+type GitProbeCount = { active: number; peak: number };
+type GitProbePlan = { command: string; arguments: string[] };
+
+function countedGitSpawn(plans: Map<string, GitProbePlan>, all: GitProbeCount, statuses: GitProbeCount) {
+  return (command: string, arguments_: string[], options: Parameters<typeof spawn>[2]) => {
+    const statusRead = arguments_.includes('status');
+    const counts = statusRead ? [all, statuses] : [all];
+    const plan = statusRead ? plans.get(worktrees.canonicalPath(String(options?.cwd))) : undefined;
+    counts.forEach((count) => {
+      count.active += 1;
+      count.peak = Math.max(count.peak, count.active);
+    });
+    const child = spawn(plan?.command ?? command, plan?.arguments ?? arguments_, options);
+    child.once('close', () => counts.forEach((count) => { count.active -= 1; }));
+    return child;
+  };
+}
+
+function shippedWorktreesWithSpawn(replacement: ReturnType<typeof countedGitSpawn>) {
+  const filename = require.resolve('../lib/worktrees.js');
+  const nativeRequire = createRequire(filename);
+  const module = { exports: { sweep: worktrees.sweep } };
+  const load = runInThisContext(`(function(require, module, exports) {${fs.readFileSync(filename, 'utf8')}\n})`, { filename });
+  load((name: string) => name === 'node:child_process' ? { ...nativeRequire(name), spawn: replacement } : nativeRequire(name), module, module.exports);
+  return module.exports;
+}
+
+function assertUnknownGitStatus(result: { entries: Array<{ path: string; reason: string; action: string; detail: string }> }, tree: string, diagnostic: RegExp) {
+  const entry = result.entries.find((candidate) => worktrees.canonicalPath(candidate.path) === worktrees.canonicalPath(tree));
+  assert.ok(entry);
+  assert.equal(entry.reason, 'status_unknown');
+  assert.equal(entry.action, 'keep');
+  assert.match(entry.detail, diagnostic);
+  assert.equal(fs.existsSync(tree), true);
+}
+
+test('shipped sweep bounds all git children and retains timeout, spawn and exit causes', async () => {
+  const { repository, baseCommit, worktreeRoot } = repositoryFixture();
+  const trees = Array.from({ length: 16 }, (_, index) => createAgentWorktree(repository, worktreeRoot, `bounded-${index}`));
+  const timeoutTree = trees[0];
+  const spawnTree = trees[1];
+  const exitTree = trees[2];
+  assert.ok(timeoutTree);
+  assert.ok(spawnTree);
+  assert.ok(exitTree);
+  const tickets = [integratedTicket('SQ-BOUNDED-CLOSED', 'bounded-0', timeoutTree, baseCommit)];
+  const plans = new Map<string, GitProbePlan>([
+    [worktrees.canonicalPath(timeoutTree), { command: process.execPath, arguments: ['-e', 'setTimeout(() => {}, 30000)'] }],
+    [worktrees.canonicalPath(spawnTree), { command: path.join(repository, 'missing-git-executable'), arguments: [] }],
+    [worktrees.canonicalPath(exitTree), { command: 'git', arguments: ['status', '--sidequest-invalid-option'] }],
+  ]);
+  const all = { active: 0, peak: 0 };
+  const statuses = { active: 0, peak: 0 };
+  const shipped = shippedWorktreesWithSpawn(countedGitSpawn(plans, all, statuses));
+  try {
+    const result = await shipped.sweep(repository, tickets, { execute: false, minAgeMs: 0, integrationTarget, statusTimeoutMs: 2000 });
+    assert.equal(result.entries.length, trees.length);
+    assert.ok(statuses.peak <= 4, `at most four status children, saw ${statuses.peak}`);
+    assert.ok(all.peak <= 16, `four classifiers with at most four git children each, saw ${all.peak}`);
+    assert.ok(all.peak > 1, 'git reads overlap');
+    assert.equal(all.active, 0, 'all git children closed');
+    assertUnknownGitStatus(result, timeoutTree, /git status timed out after 2000ms/);
+    assertUnknownGitStatus(result, spawnTree, /ENOENT/);
+    assertUnknownGitStatus(result, exitTree, /exit 129.*unknown option/s);
+  } finally {
+    trees.forEach((tree) => git(repository, ['worktree', 'remove', '--force', tree]));
+    fs.rmSync(repository, { recursive: true, force: true });
   }
 });
 
