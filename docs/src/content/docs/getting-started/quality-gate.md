@@ -19,6 +19,10 @@ The gate enforces CRAP strictly below 6 for every new or physically modified own
 
 Use `coverageCommand` to capture fresh LCOV while source hashes stay fixed. It gets an empty `QUALITY_GATE_COVERAGE_DIR` (also exposed as `QUARTERMASTER_COVERAGE_DIR`) for its `lcov.info`. Explicit CLI `--lcov` overrides isolated output and config. Otherwise fresh isolated output wins over config `lcov`, which is a fallback (default `coverage/lcov.info`). Without a command, the CLI path, configured path or default is read in that order. A command must rewrite any existing explicit or fallback output it uses. Missing or invalid selected output stays unverified, without silently selecting stale coverage. Existing LCOV needs a matching `<lcov>.sources.json` SHA-256 map saved at coverage capture. Source hashes alone do not prove executable-line completeness. JS/TS LCOV currently has no supported independent executable-line inventory, so those rows stay UNVERIFIED. Supported JS/TS bodies can use the existing `measure` entry with genuine same-session V8 capture. Raw V8 capture from vite-node does not identify source modules.
 
+`--source <path>` narrows configured or default sources for one run without changing config. Repeat it for multiple files or directories, relative to the measured project root, for example `crap --project <root> --source src/changed.py --source src/other.py --cc-only`. Config exclusions still apply; selectors cannot widen configured sources.
+
+Invalid UTF-8, Python syntax errors and lone surrogates produce an informational UNVERIFIED row for that file. Other selected files are still measured.
+
 ## New JavaScript helpers outside a repository
 
 ```text

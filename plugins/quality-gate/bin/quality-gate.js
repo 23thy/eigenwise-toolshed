@@ -9,7 +9,7 @@ import { PYTHON_POLICIES, DEFAULT_PYTHON_POLICY } from '../lib/python.mjs';
 const HELP = `Usage:
   quality-gate crap [--project <root>] [--base <revision>] [--lcov <path>]
                     [--coverage-command "<command>"] [--cc-only] [--json]
-                    [--complexity <lizard.csv>] [--python-policy <policy>]
+                    [--complexity <lizard.csv>] [--python-policy <policy>] [--source <path>]...
   quality-gate measure [--project <root>] [--base <revision>] --coverage <V8-directory>
                        [--new-external-file <absolute path>]... [files...]
 
@@ -24,8 +24,10 @@ capture-launch command supports that exact boundary. Stop after that actual refu
 
 crap reads .claude/quality-gate/crap.json (falls back to .claude/quartermaster/crap.json).
 --project selects the tree measured, including a linked worktree; without it the cwd's Git root is used.
+--source <path> is repeatable and narrows configured/default sources to files or directories relative to --project; exclusions still apply.
 JS/TS runtime functions use the TypeScript AST, PHP/Vue use lizard. Python uses the versioned
 stdlib AST adapter through python3 or py -3 (no radon dependency), with qualified oracle rows. No JavaScript or TypeScript lizard row is scored, including --complexity input.
+Invalid UTF-8 and Python syntax/surrogate errors leave per-file informational UNVERIFIED rows; other files are still measured.
 --python-policy (config pythonPolicy) explicitly selects ${PYTHON_POLICIES.join(" or ")}; default ${DEFAULT_PYTHON_POLICY}.
 config pythonOracles optionally supplies exact {file, name, reason} entries as an authoritative allowlist.
 Absent collection uses source-name rules; [] qualifies no oracles. Fixtures/setup always take precedence.
@@ -54,8 +56,10 @@ Receipts, including unverified runs, go to .claude/quality-gate/receipts/<head-s
 function argumentsForCommand() {
   const options = Object.fromEntries(['project', 'base', 'coverage', 'lcov', 'coverage-command', 'complexity', 'ratchet', 'max', 'python-policy'].map((name) => [name, { type: 'string' }]));
   Object.assign(options, Object.fromEntries(['cc-only', 'json', 'help'].map((name) => [name, { type: 'boolean' }])));
+  options.source = { type: 'string', multiple: true };
   options['new-external-file'] = { type: 'string', multiple: true };
   const parsed = parseArgs({ allowPositionals: true, options });
+  if (parsed.values.source && parsed.positionals[0] !== 'crap') throw new Error('--source belongs to crap only');
   if (parsed.values['new-external-file'] && parsed.positionals[0] !== 'measure') throw new Error('--new-external-file belongs to measure only');
   return parsed;
 }
@@ -79,7 +83,7 @@ async function capturedReport(values) {
 }
 
 async function runCrap(values, files) {
-  if (files.length) throw new Error('crap takes no positional files. Set sources in .claude/quality-gate/crap.json.');
+  if (files.length) throw new Error('crap takes no positional files. Use --source <path> or set sources in .claude/quality-gate/crap.json.');
   if (values.coverage) throw new Error('crap consumes LCOV. Use --lcov, or use measure for a V8 coverage directory.');
   const report = await capturedReport(values);
   report.receipt = writeReceipt(report);
