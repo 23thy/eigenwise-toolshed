@@ -91,7 +91,7 @@ const VERIFY_CWD_PROP = { type: 'string', description: 'Directory the verify com
 const VERIFY_ORACLE_PROP = {
   type: 'string',
   maxLength: store.EXECUTOR_VERIFY_MAX,
-  description: 'Pin the required verifier in the prepared attempt. command and suite use one validated command, and suite names resolve during preparation. document, link, schema, manual, review, attestation, and custom preserve their own evidence contract. Attestation evidence uses `attestation: <artifact> | <evidence produced> | <what it showed>`. Executors can provide evidence but cannot replace or skip the pinned verifier. A waiver needs explicit authority, reason, affected gate, and bounded scope or expiry.',
+  description: 'Pin the required verifier in the prepared attempt. command, suite and typecheck use one validated command, and suite names resolve during preparation. document, link, schema, manual, review, attestation, and custom preserve their own evidence contract. Attestation evidence uses `attestation: <artifact> | <evidence produced> | <what it showed>`. Executors can provide evidence but cannot replace or skip the pinned verifier. A waiver needs explicit authority, reason, affected gate, and bounded scope or expiry.',
 };
 
 function liveVerificationAmendment(ticket: any) {
@@ -164,7 +164,7 @@ const tools: ToolDefinition[] = [
         project: PROJECT_PROP,
         ...TICKET_FIELD_PROPS,
         workingTreeDelivery: { type: 'boolean', description: 'Shared-checkout deliverable that forbids commits. Command or suite verification needs final verify-capture; commandless kinds need explicit done.verify evidence.' },
-        verifyKind: { type: 'string', enum: store.VERIFY_ORACLE_KINDS, description: 'Pinned verification kind. command and suite execute a validated command; document, link, schema, manual, review, attestation, and custom retain their evidence contract. attestation requires attestationArtifact, and attestationArtifact is rejected when verifyKind is command.' },
+        verifyKind: { type: 'string', enum: store.VERIFY_ORACLE_KINDS, description: 'Pinned verification kind. command, suite and typecheck execute a validated command; document, link, schema, manual, review, attestation, and custom retain their evidence contract. attestation requires attestationArtifact, and attestationArtifact is rejected when verifyKind is command.' },
         storyId: { type: 'string', pattern: '^US-\\d+$', description: 'A story ref (US-n) to file this ticket into.' },
         complexity: { type: 'integer', minimum: 1, maximum: 10, description: 'Legacy score. Requires why (min 20 chars).' },
         why: { type: 'string', description: 'Motivation for the complexity score (min 20 chars).' },
@@ -251,7 +251,7 @@ const tools: ToolDefinition[] = [
         status: { type: 'string', enum: store.VALID_STATUS },
         by: { type: 'string', description: 'Human-readable update label. It cannot authorize closeout fields on a live claim.' },
         workingTreeDelivery: { type: 'boolean', description: 'Orchestrator-only live-claim declaration for a shared-checkout deliverable that forbids commits. The executor closes with done after the pinned verify-capture records the final declared working-tree paths.' },
-        verifyKind: { type: 'string', enum: store.VERIFY_ORACLE_KINDS, description: 'Verification kind for future dispatches. An open dispatch keeps its pinned kind. command and suite execute a validated command; document, link, schema, manual, review, attestation, and custom retain their evidence contract. attestation requires attestationArtifact, and attestationArtifact is rejected when verifyKind is command.' },
+        verifyKind: { type: 'string', enum: store.VERIFY_ORACLE_KINDS, description: 'Verification kind for future dispatches. An open dispatch keeps its pinned kind. command, suite and typecheck execute a validated command; document, link, schema, manual, review, attestation, and custom retain their evidence contract. attestation requires attestationArtifact, and attestationArtifact is rejected when verifyKind is command.' },
         storyId: { anyOf: [{ type: 'string', pattern: '^US-\\d+$' }, { const: 'none' }] },
         complexity: { type: 'integer', minimum: 1, maximum: 10 },
         why: { type: 'string' },

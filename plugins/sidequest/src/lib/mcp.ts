@@ -73,9 +73,10 @@ const DEFAULT_PROTOCOL_VERSION = '2025-06-18';
 // Raised from 27075 for board_config.verifyEnvironment (SQ-3423): +235 bytes compacted, 67 for the key and its
 // enum plus 168 for the served description, since compactSchema strips the authored one. Measured at 24797
 // payload bytes on the W1 tree, so the 2.5KB reserve holds.
-// Raised from 27300 for the GH-424 add/update schema parity merged with develop: measured at 24828 payload
-// bytes on the merged tree, so 27330 keeps the 2.5KB reserve.
-const MCP_TOOLS_LIST_MAX_BYTES = 27330;
+// Raised from 27300 for dispatch.workProvenance (SQ-3630): measured payload 25325 bytes, all added schema structure since compactSchema strips the authored description. Keeps the 2.5KB reserve.
+// Raised from 27850 for add/update verifyKind typecheck (SQ-3644): +44 bytes of enum structure, measured 25394 payload bytes. Keeps the 2.5KB reserve.
+// Raised from 27900 for the GH-424 shared add/update field schema merged with develop: measured 25425 payload bytes, +31 net over develop (add now also accepts externalDeliverable). Keeps the 2.5KB reserve.
+const MCP_TOOLS_LIST_MAX_BYTES = 28000;
 const MCP_TOOLS_LIST_HEADROOM_BYTES = 2500;
 
 function serverVersion() {

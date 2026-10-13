@@ -1,4 +1,5 @@
 "use strict";
+var import_work_provenance = require("./store/work-provenance");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -176,9 +177,6 @@ function ensureProject(...args) {
 }
 function readMeta(...args) {
   return projectsLayer.readMeta(...args);
-}
-function metaLockPath(...args) {
-  return projectsLayer.metaLockPath(...args);
 }
 function withMetaLock(...args) {
   return projectsLayer.withMetaLock(...args);
@@ -857,7 +855,7 @@ function withinTransaction(handle, fn) {
   try {
     result = db.txn(handle, () => {
       commitTasks.length = 0;
-      return fn();
+      return db.guardsEveryWrite() ? db.guardedWrite(fn) : fn();
     });
   } finally {
     openTransactionCommitTasks.delete(handle);
@@ -1045,68 +1043,31 @@ function negativeControlResult(ticket, expectedTestNames = []) {
   return otherControlAuthor ? { kind: "wrong_author", by: otherControlAuthor } : { kind: "missing" };
 }
 function negativeControlRefusal(ticket, result) {
-  const recipe = negativeControlRecoveryGuidance();
-  if (result.kind === "import_error" || result.kind === "collection_error") {
-    const failure = result.kind === "import_error" ? "an ImportError" : "a collection error";
-    return {
-      ok: false,
-      reason: `negative_control_${result.kind}`,
-      message: `${ticket.ref} completion refused: the recorded negative control failed with ${failure}. ${recipe}`
-    };
-  }
-  if (result.kind === "undeclared_failure_kind") {
-    return {
-      ok: false,
-      reason: "negative_control_failure_kind_required",
-      message: `${ticket.ref} completion refused: the negative control must declare how the changed tests failed. Add failure-kind=assertion, failure-kind=import, or failure-kind=collection after failed=<n> on the marker line. ${recipe}`
-    };
-  }
-  if (result.kind === "missing_target_or_assertion") {
-    return {
-      ok: false,
-      reason: "negative_control_evidence_required",
-      message: `${ticket.ref} completion refused: the negative control must name the broken target and the assertion that failed. ${recipe}`
-    };
-  }
-  if (result.kind === "zero_failures") {
-    return {
-      ok: false,
-      reason: "negative_control_zero_failures",
-      message: `${ticket.ref} completion refused: failed=0 means tests passed against the pre-change code and do not test the change. ${recipe}`
-    };
-  }
-  if (result.kind === "unreported_tests") {
-    return {
-      ok: false,
-      reason: "negative_control_test_required",
-      message: `${ticket.ref} completion refused: the negative control did not report these added or modified tests: ${result.tests.join(", ")}. Claim-holder test markers found: ${(result.markerLines || []).map((line) => `"${line}"`).join(", ") || "none"}. ${recipe}`
-    };
-  }
-  if (result.kind === "short_waiver") {
-    return {
-      ok: false,
-      reason: "negative_control_waiver_too_short",
-      message: `${ticket.ref} completion refused: a negative-control waiver needs a reason of at least 20 characters. ${recipe}`
-    };
-  }
-  if (result.kind === "malformed_marker") {
-    return {
-      ok: false,
-      reason: "negative_control_required",
-      message: `${ticket.ref} completion refused: found negative-control marker line "${result.markerLine}", but the number was not where it was expected. ${recipe}`
-    };
-  }
-  if (result.kind === "wrong_author") {
-    return {
-      ok: false,
-      reason: "negative_control_required",
-      message: `${ticket.ref} completion refused: a negative control was recorded by "${result.by}", but the current claim holder is "${ticket.claim.by}". ${recipe}`
-    };
-  }
+  const messages = {
+    import_error: "the recorded negative control failed with an ImportError",
+    collection_error: "the recorded negative control failed with a collection error",
+    undeclared_failure_kind: "the negative control must declare failure-kind=assertion, failure-kind=import, or failure-kind=collection",
+    missing_target_or_assertion: "the negative control must name the broken target and the assertion that failed",
+    zero_failures: "failed=0 means tests passed against the pre-change code and do not test the change",
+    unreported_tests: "the negative control did not report these added or modified tests: " + result.tests?.join(", "),
+    short_waiver: "a negative-control waiver needs a reason of at least 20 characters",
+    malformed_marker: 'found negative-control marker line "' + result.markerLine + '", but the number was not where it was expected',
+    wrong_author: 'a negative control was recorded by "' + result.by + '", but the current claim holder is "' + ticket.claim?.by + '"',
+    missing: "new behavior needs a claim-holder negative control"
+  };
+  const reasons = {
+    import_error: "negative_control_import_error",
+    collection_error: "negative_control_collection_error",
+    undeclared_failure_kind: "negative_control_failure_kind_required",
+    missing_target_or_assertion: "negative_control_evidence_required",
+    zero_failures: "negative_control_zero_failures",
+    unreported_tests: "negative_control_test_required",
+    short_waiver: "negative_control_waiver_too_short"
+  };
   return {
     ok: false,
-    reason: "negative_control_required",
-    message: `${ticket.ref} completion refused: changed scoped paths include both test-side and non-test-side files, but the claim holder has not recorded a negative control. ${recipe}`
+    reason: reasons[result.kind] ?? "negative_control_required",
+    message: ticket.ref + " completion refused: " + (messages[result.kind] ?? messages.missing) + "; " + negativeControlRecoveryGuidance()
   };
 }
 function completionScope(slug, ticket) {
@@ -1119,27 +1080,61 @@ function completionScope(slug, ticket) {
   }) : [];
   return [.../* @__PURE__ */ new Set([...executionScope(slug, ticket), ...relatedFragments])];
 }
-function completionTreeCheck(slug, ticket, opts) {
+function completionWorkFacts(slug, ticket) {
   const state = dispatchState(ticket);
-  if (!state || state.readonly === true || state.nonRepoOutput === true) return { ok: true, applicable: false };
   const declaredFiles = completionScope(slug, ticket);
-  if (!declaredFiles.length) return { ok: true, applicable: false };
+  const eligible = [Boolean(state), state?.readonly !== true || Boolean(state?.workProvenance), state?.nonRepoOutput !== true, declaredFiles.length > 0];
+  if (!eligible.every(Boolean)) return { ok: true, applicable: false };
   const delta = dispatchDelta(slug, ticket);
   if (!delta.ok) return { ok: true, applicable: false, unavailable: true };
   const changedPaths = Array.from(/* @__PURE__ */ new Set([...delta.working, ...delta.committed])).filter((file) => commitScope.isInScope(file, declaredFiles)).sort();
-  if (!changedPaths.length && opts?.explicitNoOp !== true) {
-    return {
-      ok: false,
-      reason: "empty_declared_scope",
-      declaredFiles,
-      message: `${ticket.ref} completion refused: its declared write scope has an empty diff since dispatch base. Declared files: ${declaredFiles.join(", ")}. A claim holder may record factual failed_suite or could_not_run verification evidence before editing, but a successful completion, submit, or done still needs scoped work. If this run intentionally made no repository change, report [sidequest:verify-complete] no-op: <evidence>; verification outcomes use [sidequest:verify-complete] <passed|failed_suite|toolchain_missing|could_not_run|timeout|manual|attestation|skipped|failed_check>: <evidence>.`
-    };
+  try {
+    const ownedPaths = (0, import_work_provenance.ownedWorkPaths)(delta.workspace.root, state.workProvenance, changedPaths, (ref) => getTicket(slug, ref));
+    return { ok: true, applicable: true, declaredFiles, changedPaths, ownedPaths, delta, provenance: state.workProvenance };
+  } catch (error) {
+    return { ok: false, reason: "work_provenance_mismatch", message: error instanceof Error ? error.message : String(error) };
   }
-  if (changedPaths.some(isTestSidePath) && changedPaths.some((file) => !isTestSidePath(file))) {
-    const negativeControl = negativeControlResult(ticket, changedTestNames(delta, changedPaths));
-    if (negativeControl.kind !== "failed" && negativeControl.kind !== "waived") return negativeControlRefusal(ticket, negativeControl);
-  }
-  return { ok: true, applicable: true, changedPaths, noOp: !changedPaths.length };
+}
+function emptyScopeCompletion(ticket, declaredFiles) {
+  return {
+    ok: false,
+    reason: "empty_declared_scope",
+    declaredFiles,
+    message: `${ticket.ref} completion refused: its declared write scope has an empty diff since dispatch base. Declared files: ${declaredFiles.join(", ")}. A claim holder may record factual failed_suite or could_not_run verification evidence before editing, but a successful completion, submit, or done still needs scoped work. If this run intentionally made no repository change, report [sidequest:verify-complete] no-op: <evidence>; verification outcomes use [sidequest:verify-complete] <passed|failed_suite|toolchain_missing|could_not_run|timeout|manual|attestation|skipped|failed_check>: <evidence>.`
+  };
+}
+function isBehaviorSourcePath(file) {
+  const normalized = file.replace(/\\/g, "/");
+  return /\.(?:[cm]?[jt]sx?|py|php|rb|go|rs|java|cs|c|cpp|h|sh|vue|svelte)$/.test(normalized) && !/(?:^|\/)(?:fixtures?|docs?|examples?)(?:\/|$)|\.d\.[cm]?ts$/.test(normalized);
+}
+function ownedControlCheck(ticket, delta, ownedPaths) {
+  const kind = ticket.dispatch?.workProvenance?.kind;
+  if (["behavior-preserving-refactor", "inherited-read-only", "docs", "type-annotation-only", "fixture-only"].includes(String(kind))) return { ok: true, negativeControl: "not_required(" + kind + ")" };
+  const mixed = [ownedPaths.some(isTestSidePath), ownedPaths.filter((file) => !isTestSidePath(file)).some(isBehaviorSourcePath)].every(Boolean);
+  if ([!kind, !mixed].every(Boolean)) return { ok: true, negativeControl: "not_required(no changed source under changed tests)" };
+  const control = negativeControlResult(ticket, changedTestNames(delta, ownedPaths));
+  return ["failed", "waived"].includes(control.kind) ? { ok: true, negativeControl: control.kind } : negativeControlRefusal(ticket, control);
+}
+function completionTreeCheck(slug, ticket, opts) {
+  const facts = completionWorkFacts(slug, ticket);
+  if (!facts.ok) return facts;
+  if (!facts.applicable) return facts;
+  const emptyWithoutDeclaration = [!facts.changedPaths.length, opts?.explicitNoOp !== true].every(Boolean);
+  if ([emptyWithoutDeclaration, facts.provenance?.kind !== "inherited-read-only"].every(Boolean)) return emptyScopeCompletion(ticket, facts.declaredFiles);
+  const control = ownedControlCheck(ticket, facts.delta, facts.ownedPaths);
+  if (!control.ok) return control;
+  return {
+    ok: true,
+    applicable: true,
+    changedPaths: facts.changedPaths,
+    ownedPaths: facts.ownedPaths,
+    noOp: !facts.changedPaths.length,
+    workProvenance: facts.provenance,
+    negativeControl: control.negativeControl
+  };
+}
+function submissionCompletionTreeCheck(slug, ticket, opts) {
+  return (0, import_work_provenance.provenanceAdmissionHold)(ticket.dispatch?.workProvenance) || completionTreeCheck(slug, ticket, opts);
 }
 const {
   DEFAULT_CLAIM_ABANDON_MIN,
@@ -1431,7 +1426,7 @@ const {
   boundedExcerptForSubmission: (...args) => boundedExcerpt(...args),
   claimReclaimable,
   commitScope,
-  completionTreeCheck,
+  completionTreeCheck: submissionCompletionTreeCheck,
   coerceStatus,
   createComment,
   crypto,
@@ -1869,8 +1864,11 @@ const INVALID_DIRECT_REASON_PATTERNS = [
 function directReasonAllowed(reason) {
   return !INVALID_DIRECT_REASON_PATTERNS.some((pattern) => pattern.test(String(reason || "")));
 }
+function lifecyclePreparedAt(ticket) {
+  return String(ticket.dispatch?.preparedAt || ticket.updatedAt || (/* @__PURE__ */ new Date()).toISOString());
+}
 function lifecycleBaseline(slug, ticket, purpose) {
-  const preparedAt = String(ticket.dispatch?.preparedAt || ticket.updatedAt || (/* @__PURE__ */ new Date()).toISOString());
+  const preparedAt = lifecyclePreparedAt(ticket);
   const project = readMeta(slug);
   const projectPath = String(project?.path || "").trim();
   const revision = project?.sourceRevisionAdapter === FILESYSTEM_SNAPSHOT_ADAPTER ? filesystemSnapshotBaseline(slug, preparedAt) : Object.freeze({
@@ -1881,12 +1879,18 @@ function lifecycleBaseline(slug, ticket, purpose) {
   return Object.freeze({ revision, purpose });
 }
 function recordLifecycleAttempt(ticket, attempt) {
-  ticket.lifecycleAttempt = attempt;
-  if (ticket.dispatch) ticket.dispatch.lifecycleAttempt = attempt;
+  const recorded = { ...attempt, workProvenance: ticket.dispatch?.workProvenance };
+  ticket.lifecycleAttempt = recorded;
+  if (ticket.dispatch) ticket.dispatch.lifecycleAttempt = recorded;
 }
-function lifecycleAttemptFromFacts(slug, ticket, authority, purpose, direct) {
+function observeLifecycleBaseline(slug, ticket) {
+  if ((ticket.lifecycleAttempt || ticket.dispatch?.lifecycleAttempt)?.baseline) return null;
+  return { preparedAt: lifecyclePreparedAt(ticket), baseline: lifecycleBaseline(slug, ticket, "dispatch") };
+}
+function lifecycleAttemptFromFacts(ticket, authority, direct, observed) {
   const persistedAttempt = ticket.lifecycleAttempt || ticket.dispatch?.lifecycleAttempt;
-  const baseline = persistedAttempt?.baseline || lifecycleBaseline(slug, ticket, purpose);
+  const baseline = persistedAttempt?.baseline || (observed?.preparedAt === lifecyclePreparedAt(ticket) ? observed.baseline : null);
+  if (!baseline) return null;
   const preparedCompatibility = persistedAttempt?.preparedCompatibility || ticket.dispatch?.preparedCompatibility;
   let current = direct ? prepareDirectAttempt(baseline, persistedAttempt?.authority || authority) : prepareAttempt(baseline, persistedAttempt?.authority || authority, preparedCompatibility);
   const dispatch2 = ticket.dispatch;
@@ -2047,6 +2051,7 @@ function claimTicket(slug, idOrRef, by, opts) {
   by = String(by || "agent");
   const found = getTicket(slug, idOrRef);
   if (!found) return { ok: false, reason: "not_found" };
+  const observedBaseline = observeLifecycleBaseline(slug, found);
   const result = withCompositionGenerationLock(slug, found.id, () => {
     const t = getTicket(slug, found.id);
     if (!t) return { ok: false, reason: "not_found" };
@@ -2097,7 +2102,8 @@ function claimTicket(slug, idOrRef, by, opts) {
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const lifecycleAuthority = { actor: by, operation: "claim", sessionId: opts.sessionId || null };
     const directExecution = opts.direct || !currentDispatch;
-    let activeAttempt = directExecution ? lifecycleAttemptFromFacts(slug, t, lifecycleAuthority, "dispatch", true) : lifecycleAttemptFromFacts(slug, t, lifecycleAuthority, "dispatch", false);
+    let activeAttempt = lifecycleAttemptFromFacts(t, lifecycleAuthority, directExecution, observedBaseline);
+    if (!activeAttempt) return { ok: false, reason: "busy", ticket: t };
     if (!directExecution && opts.requireBoundAgent && currentDispatch && activeAttempt.state === "prepared") {
       const boundAttempt = bindDispatchClaimToken(currentDispatch, activeAttempt, opts.sessionId, opts.executor, now);
       if (boundAttempt) activeAttempt = boundAttempt;
@@ -2217,7 +2223,7 @@ function claimTicket(slug, idOrRef, by, opts) {
       t.updatedAt = now;
     }
     putTicket(slug, t);
-    if (opts.sessionId) registerWorker(opts.sessionId, slug, t.id, by);
+    if (opts.sessionId) afterCommit(() => registerWorker(opts.sessionId, slug, t.id, by));
     queueEventNotification(slug, t, t.lastEventType, t.lastEventSource);
     return { ok: true, ticket: t, ...compatibilityAdvisory ? { advisory: compatibilityAdvisory } : {} };
   });
@@ -2316,7 +2322,7 @@ function doneReleaseResult(request, t) {
 }
 function repeatedDoneResult(request, t) {
   if (request.opts.status !== "done" || !sameDoneCompletion(t, t.completion, request.by)) return null;
-  return { ok: true, idempotent: true, ticket: t, comment: completionCommentOf(t, t.completion) };
+  return { ok: true, idempotent: true, ticket: t, comment: completionCommentOf(t, t.completion), ignoredDirtyPaths: t.completion?.ignoredDirtyPaths, warnings: t.completion?.warnings };
 }
 function sameDoneCompletion(t, completion, by) {
   if (!completion) return false;
@@ -2461,6 +2467,8 @@ function workingTreeDeliveryRefusal(request, facts, completionDelta) {
   if (!verification.ok) return Object.assign({ ticket: facts.t }, verification);
   request.opts.completionProvenance = {
     purpose: "working-tree",
+    ignoredDirtyPaths: delivery.ignoredDirtyPaths,
+    warnings: delivery.warnings,
     workingTree: {
       candidate: delivery.candidate,
       changedPaths: delivery.changedPaths,
@@ -2487,8 +2495,12 @@ function claimReleasedRefusal(facts) {
   };
 }
 function scopeCloseoutRefusal(request, facts, delta) {
-  const unusedReviewScope = boundReviewLeftScopeUnused(facts.dispatch, delta.completionDelta, facts.declaredFiles);
+  const unusedReviewScope = boundReviewLeftScopeUnused(facts.dispatch, delta.completionDelta, facts.declaredFiles) || unchangedRepositoryScope(facts, delta.completionDelta);
   return submissionRequiredRefusal(request, facts, delta.sharedTreeCommittedScope, unusedReviewScope) || completionTreeRefusal(request, facts, delta.completionDelta, unusedReviewScope);
+}
+function unchangedRepositoryScope(facts, delta) {
+  if (!delta?.ok || pendingSubmission(facts.t) || delta.commitCount !== 0) return false;
+  return !delta.working.some((file) => commitScope.isInScope(file, facts.declaredFiles));
 }
 function submissionRequiredRefusal(request, facts, sharedTreeCommittedScope, unusedReviewScope) {
   if (!facts.dispatch || !facts.declaredFiles.length) return null;
@@ -2496,7 +2508,7 @@ function submissionRequiredRefusal(request, facts, sharedTreeCommittedScope, unu
   return submissionRequired(facts.t);
 }
 function closesWithoutSubmission(request, facts, sharedTreeCommittedScope, unusedReviewScope) {
-  return provenNoOpCloseout(request, facts, unusedReviewScope) || sharedTreeCommittedScope || facts.activeReadOnlyDispatch || facts.terminalReadOnlyOracle;
+  return provenNoOpCloseout(request, facts, unusedReviewScope) || facts.activeReadOnlyDispatch || facts.terminalReadOnlyOracle;
 }
 function provenNoOpCloseout(request, facts, unusedReviewScope) {
   return request.opts.cleanDeclaredScope === true || Boolean(facts.dispatch?.noOpRelease) || unusedReviewScope;
@@ -2508,7 +2520,7 @@ function submissionRequired(t) {
   return {
     ok: false,
     reason: "submission_required",
-    message: `${t.ref} has routed repository write scope. Its executor must commit and submit verified changes. A read-only dispatch may close with done, but readonly:false selects this write path unless the recorded last executor is read-only. If the ticket contract forbids commits, set workingTreeDelivery:true before dispatch and run it in the shared checkout; done then records its declared working-tree paths and matching pinned verify-capture. A clean declared scope may close as an external-deliverable completion only when the ticket explicitly sets externalDeliverable:true. The orchestrator can set that flag through update during this claim; then, if the pinned requirement has a command, run it through the dispatched verify-capture wrapper for the current dispatch attempt and revision; otherwise supply explicit done --verify evidence for the pinned requirement. Repeat done with that evidence. Dirty or committed declared paths still require commit and submit.`,
+    message: `${t.ref} has repository changes. Commit and submit verified changes. A dispatched executor with no commit, no dirty declared path, and no pending submission may close with done carrying its report. Working-tree deliverables retain their declared paths and verification requirements.`,
     ticket: t
   };
 }
@@ -2816,6 +2828,8 @@ function releasedResult(request, closeout, comment) {
     ok: true,
     ticket: closeout.t,
     comment,
+    ignoredDirtyPaths: closeout.t.completion?.ignoredDirtyPaths,
+    warnings: closeout.t.completion?.warnings,
     ...closeout.reopenedSubmission ? { clearedSubmission: closeout.reopenedSubmission } : {},
     ...request.opts.completionComment && request.opts.completionComment.advisory ? { advisory: request.opts.completionComment.advisory } : {}
   };
@@ -2888,16 +2902,16 @@ function deliveryScopesOverlap(left, right) {
 function sameWorkingTreePaths(left, right) {
   return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((path2, index) => path2 === right[index]);
 }
-function siblingDeliveryIntegrityFailure(ticket, sibling, recordedPaths) {
+function siblingDeliveryIntegrityFailure(sibling, recordedPaths) {
   const paths = Array.isArray(recordedPaths) ? recordedPaths : [];
   return {
     ok: false,
     reason: "working_tree_sibling_integrity_violation",
-    message: `${ticket.ref} cannot close its working-tree deliverable because completed sibling ${sibling.ref}'s recorded delivery no longer matches its candidate. Preserve the shared-tree work and hand it back to the existing parent for verification or grooming; do not revert it, expand scope, or commit it.`,
+    message: `Completed sibling ${sibling.ref}'s recorded working-tree delivery no longer matches its candidate. Preserve its paths and report the drift to the parent for verification or grooming; do not revert or commit them.`,
     unscopedPaths: paths
   };
 }
-function completedSiblingWorkingTreeDelivery(slug, ticket, sibling, siblingClaimAt, currentClaimAt, now) {
+function completedSiblingWorkingTreeDelivery(slug, sibling, siblingClaimAt, currentClaimAt, now) {
   const siblingDispatch = dispatchState(sibling);
   const completionAt = Date.parse(String(siblingDispatch?.terminalAt || ""));
   if (!Number.isFinite(completionAt) || siblingClaimAt > completionAt || completionAt > now || currentClaimAt > completionAt) return null;
@@ -2905,44 +2919,40 @@ function completedSiblingWorkingTreeDelivery(slug, ticket, sibling, siblingClaim
   const recordedCandidate = recorded?.candidate;
   const recordedPaths = Array.isArray(recorded?.changedPaths) ? recorded.changedPaths : null;
   if (recordedCandidate?.source !== "working-tree" || !/^[a-f0-9]{64}$/i.test(String(recordedCandidate?.value || "")) || !recordedPaths?.length || !commitScope.validateRelativeScopes(recordedPaths).ok || recordedPaths.some((file) => file.includes("*") || !commitScope.isInScope(file, siblingDispatch.declaredFiles))) {
-    return siblingDeliveryIntegrityFailure(ticket, sibling, recordedPaths);
+    return siblingDeliveryIntegrityFailure(sibling, recordedPaths);
   }
   const current = workingTreeDeliveryCandidate(slug, sibling);
   if (!current || current.candidate.value !== recordedCandidate.value || !sameWorkingTreePaths(current.changedPaths, recordedPaths)) {
-    return siblingDeliveryIntegrityFailure(ticket, sibling, recordedPaths);
+    return siblingDeliveryIntegrityFailure(sibling, recordedPaths);
   }
-  return { ok: true, paths: recordedPaths };
+  return { ok: true };
 }
-function siblingWorkingTreeDeliveryPaths(slug, ticket) {
+function siblingWorkingTreeDeliveryWarnings(slug, ticket) {
   const dispatch2 = dispatchState(ticket);
   const currentClaimAt = deliveryClaimAt(ticket);
   const relationship = deliveryRelationshipIdentity(ticket);
   const now = Date.now();
-  if (dispatch2?.sharedTree !== true || dispatch2?.workingTreeDelivery !== true || dispatch2?.terminalAt != null || !ticket?.claim?.by || !relationship || !Number.isFinite(currentClaimAt) || currentClaimAt > now) return { ok: true, paths: [] };
+  if (dispatch2?.sharedTree !== true || dispatch2?.workingTreeDelivery !== true || dispatch2?.terminalAt != null || !ticket?.claim?.by || !relationship || !Number.isFinite(currentClaimAt) || currentClaimAt > now) return [];
   const root = String(readMeta(slug)?.path || "").trim();
   const declaredFiles = dispatch2.declaredFiles;
-  if (!root || !commitScope.validateRelativeScopes(declaredFiles).ok) return { ok: true, paths: [] };
-  const paths = [];
+  if (!root || !commitScope.validateRelativeScopes(declaredFiles).ok) return [];
+  const warnings = [];
   for (const sibling of listTickets(slug)) {
     if (!sibling || sibling.ref === ticket.ref || sibling.archived) continue;
     const siblingDispatch = dispatchState(sibling);
     const siblingClaimAt = deliveryClaimAt(sibling);
     if (siblingDispatch?.sharedTree !== true || siblingDispatch?.workingTreeDelivery !== true || deliveryRelationshipIdentity(sibling) !== relationship || !commitScope.validateRelativeScopes(siblingDispatch.declaredFiles).ok || deliveryScopesOverlap(declaredFiles, siblingDispatch.declaredFiles) || !Number.isFinite(siblingClaimAt) || siblingClaimAt > now) continue;
-    if (sibling.claim?.by) {
-      if (sibling.status === "doing" && siblingDispatch.terminalAt == null) paths.push(...commitScope.scopedPaths(siblingDispatch.declaredFiles));
-      continue;
-    }
+    if (sibling.claim?.by) continue;
     if (sibling.status !== "done" || sibling.completion?.purpose !== "working-tree") continue;
-    const completed = completedSiblingWorkingTreeDelivery(slug, ticket, sibling, siblingClaimAt, currentClaimAt, now);
+    const completed = completedSiblingWorkingTreeDelivery(slug, sibling, siblingClaimAt, currentClaimAt, now);
     if (!completed) continue;
-    if (!completed.ok) return completed;
-    paths.push(...completed.paths);
+    if (!completed.ok) warnings.push(completed.message);
   }
-  return { ok: true, paths };
+  return warnings;
 }
 function workingTreeDeliveryCandidate(slug, ticket) {
   const dispatch2 = dispatchState(ticket);
-  const declaredFiles = Array.isArray(dispatch2?.declaredFiles) ? dispatch2.declaredFiles : [];
+  const declaredFiles = commitScope.ticketCommitScope(dispatch2?.declaredFiles, dispatch2?.declaredFiles, ticket?.ref);
   const baselineRecorded = Array.isArray(dispatch2?.workingTreeDirtyBaseline);
   if (dispatch2?.workingTreeDelivery !== true || !declaredFiles.length) return null;
   const baselineEntries = baselineRecorded ? dispatch2.workingTreeDirtyBaseline : [];
@@ -2969,32 +2979,16 @@ function workingTreeDeliveryCandidate(slug, ticket) {
 }
 function workingTreeDeliveryCloseout(slug, ticket, completionDelta) {
   const dispatch2 = dispatchState(ticket);
-  const siblingDelivery = siblingWorkingTreeDeliveryPaths(slug, ticket);
-  if (!siblingDelivery.ok) return siblingDelivery;
+  const warnings = siblingWorkingTreeDeliveryWarnings(slug, ticket);
   const candidate = workingTreeDeliveryCandidate(slug, ticket);
   if (!candidate) return { ok: false, reason: "working_tree_delivery_unavailable", message: `${ticket.ref} cannot inspect its pinned working-tree deliverable. Release it and dispatch again.` };
-  const declaredFiles = dispatch2.declaredFiles;
-  const baselineRecorded = Array.isArray(dispatch2.workingTreeDirtyBaseline);
-  const baselineEntries = baselineRecorded ? dispatch2.workingTreeDirtyBaseline : [];
-  const baseline = new Map(baselineEntries.map((entry) => [dirtyPathKey(entry.path), entry]));
-  const current = artifactWorkingState(slug, { allowLarge: !baselineRecorded });
-  const currentByPath = new Map(current.map((entry) => [dirtyPathKey(entry.path), entry]));
-  const siblingPaths = new Set(siblingDelivery.paths.map(dirtyPathKey));
-  const belongsToSiblingDelivery = (file) => siblingPaths.has(dirtyPathKey(file));
-  const outside = /* @__PURE__ */ new Set();
-  for (const entry of baselineEntries) {
-    if (commitScope.isInScope(entry.path, declaredFiles)) continue;
-    const currentEntry = currentByPath.get(dirtyPathKey(entry.path));
-    if ((!currentEntry || currentEntry.identity !== entry.identity) && !belongsToSiblingDelivery(entry.path)) outside.add(entry.path);
-  }
-  for (const entry of current) {
-    if ((!baselineRecorded || !baseline.has(dirtyPathKey(entry.path))) && !commitScope.isInScope(entry.path, declaredFiles) && !belongsToSiblingDelivery(entry.path)) outside.add(entry.path);
-  }
-  if (outside.size) return { ok: false, reason: "working_tree_scope_violation", message: `${ticket.ref} cannot attribute additional shared-tree changes to its working-tree deliverable: ${Array.from(outside).sort().join(", ")}. Preserve those paths and hand them back to the existing parent for verification or grooming.`, unscopedPaths: Array.from(outside).sort() };
-  const committed = Array.isArray(completionDelta?.committed) ? completionDelta.committed.filter((file) => commitScope.isInScope(file, declaredFiles)) : [];
-  if (committed.length) return { ok: false, reason: "working_tree_commit_forbidden", message: `${ticket.ref} declares a working-tree deliverable, but committed declared paths: ${committed.join(", ")}. Restore the shared checkout to the uncommitted deliverable before closing.` };
+  const declaredFiles = commitScope.ticketCommitScope(dispatch2.declaredFiles, dispatch2.declaredFiles, ticket.ref);
+  const current = artifactWorkingState(slug, { allowLarge: !Array.isArray(dispatch2.workingTreeDirtyBaseline) });
+  const ignoredDirtyPaths = current.filter((entry) => !commitScope.isInScope(entry.path, declaredFiles)).map((entry) => entry.path).sort();
+  const committed = completionDelta?.ok ? completionDelta.committed.filter((file) => commitScope.isInScope(file, declaredFiles)) : [];
+  if (committed.length) return { ok: false, reason: "working_tree_commit_forbidden", message: `${ticket.ref} declares a working-tree deliverable, but committed declared paths: ${committed.join(", ")}. Preserve the shared checkout and hand the committed paths back to the parent for a submitted delivery.` };
   if (!candidate.changedPaths.length) return { ok: false, reason: "working_tree_delivery_empty", message: `${ticket.ref} has no changed declared paths to record as a working-tree deliverable.` };
-  return { ok: true, ...candidate };
+  return { ok: true, ...candidate, ignoredDirtyPaths, warnings };
 }
 function externalDeliverableCloseout(slug, ticket, verify) {
   if (ticket?.externalDeliverable !== true) {
@@ -3589,7 +3583,6 @@ const {
   updateStory
 } = stories;
 projectsLayer = createProjects({
-  acquireLock,
   assetsDir,
   claudeHome,
   homeRoot,
@@ -3612,7 +3605,6 @@ projectsLayer = createProjects({
   putProject,
   putStory,
   putTicket,
-  releaseLock,
   residentCache,
   slugify,
   sourceRevisionAdapterForPath,
@@ -3989,3 +3981,7 @@ module.exports = {
   reconcileSession,
   sessionClaims
 };
+for (const listedWrite of Object.keys(db.WRITES_STILL_SPAWNING)) {
+  const write = module.exports[listedWrite];
+  if (typeof write === "function") module.exports[listedWrite] = (...args) => db.stillSpawnsInsideItsWrite(listedWrite, () => write(...args));
+}
