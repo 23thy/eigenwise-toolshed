@@ -738,11 +738,16 @@ async function inspectWorktree(entry, ticket, minAgeMs, upstream, notIntegratedS
   const statusEntries = cleanResult.ok ? atRiskStatusEntries(cleanResult.stdout, entry.worktree, recordedDependencyPaths(entry.worktree, ticket)) : [];
   return worktreeSweepFacts(cleanResult, statusEntries, measures, minAgeMs, notIntegratedSalvageAgeMs);
 }
+function gitStatusFailure(result) {
+  if (result.ok) return null;
+  return `git status failed (exit ${result.status}): ${result.stderr}`;
+}
 function worktreeSweepFacts(cleanResult, statusEntries, { ageMs, patch, reachable }, minAgeMs, notIntegratedSalvageAgeMs) {
   return {
     clean: cleanResult.ok && statusEntries.length === 0,
     statusKnown: cleanResult.ok,
     statusTimedOut: Boolean(cleanResult.timedOut),
+    statusFailure: gitStatusFailure(cleanResult),
     trackedChanges: statusEntries.some((status) => !UNVERSIONED_STATUS_CODES.has(status.code)),
     untrackedOrIgnored: statusEntries.some((status) => UNVERSIONED_STATUS_CODES.has(status.code)),
     ahead: patch.ahead,
@@ -821,6 +826,7 @@ function classifiedWorktreeEntry(entry, ticket, facts, action, reason, current) 
     head: entry.head || null,
     ticket: ticket ? ticket.ref : null,
     ...factsForEntry(facts),
+    detail: reason === "status_unknown" ? facts.statusFailure : void 0,
     locked: null,
     action,
     reason,
