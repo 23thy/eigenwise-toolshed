@@ -3355,11 +3355,14 @@ test('GH-406: a reservation released by a failed creation is not rebound by a la
     assert.equal(releasedReservations.length, 1, 'exactly one reservation records the failed creation');
     const released = releasedReservations[0];
     if (!released) throw new Error('no reservation records the failed creation');
-    for (const runtime of live) assert.equal(createWorktree(wave.sessionId, runtime.name).ok, true, `${runtime.ref} is created`);
+    // Reverse creation order leaves the released reservation's own checkout on a live sibling's record, not the dead
+    // spawn's, so the claims below chain: the released claim empties a live record that must then still trade.
+    for (const runtime of [...live].reverse()) assert.equal(createWorktree(wave.sessionId, runtime.name).ok, true, `${runtime.ref} is created`);
     assert.equal(wave.recorded(released).worktree || null, null, `${released.ref} was rebound by a later sibling hook`);
     const bound = wave.runtimes.filter(runtime => runtime !== released).map(runtime => wave.recorded(runtime).worktree).sort();
     assert.deepEqual(bound, live.map(runtime => worktrees.canonicalPath(runtime.path)).sort(), 'the live siblings hold the two created checkouts');
-    await claimEachOwnCheckout(wave, live);
+    const releasedFirst = [...live].sort((left, right) => Number(right === released) - Number(left === released));
+    await claimEachOwnCheckout(wave, releasedFirst);
     const unclaimed = wave.runtimes.filter(runtime => !store.getTicket(slug, runtime.ref).claim);
     assert.equal(unclaimed.length, 1, 'the claims leave exactly one reservation for the spawn that died');
     const stranded = unclaimed[0];
