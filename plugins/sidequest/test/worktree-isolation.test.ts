@@ -3339,6 +3339,38 @@ test('GH-406: a concurrent sibling creation that fails leaves the live siblings 
   }
 });
 
+// The Linux runner ran the failing hook to completion before its siblings bound anything (PR #534 CI). The reservation
+// it released was free again, so a live sibling rebound it and the last sibling of the message was left with no record
+// and nothing a claim could trade for the checkout it ran in.
+test('GH-406: a reservation released by a failed creation is not rebound by a later sibling hook', async () => {
+  const wave = sq3139CrossedWave('gh406rebind', ['one', 'two', 'three']);
+  const failing = wave.first;
+  const live = wave.runtimes.slice(1);
+  const releasedByFailure = () => wave.runtimes.filter(runtime => wave.recorded(runtime).worktreeBindingExchange?.reason === 'worktree_create_failed');
+  try {
+    fs.mkdirSync(failing.path, { recursive: true });
+    fs.writeFileSync(path.join(failing.path, 'occupant.txt'), 'blocks creation\n');
+    assert.equal(createWorktree(wave.sessionId, failing.name).ok, false, 'the first creation fails');
+    const releasedReservations = releasedByFailure();
+    assert.equal(releasedReservations.length, 1, 'exactly one reservation records the failed creation');
+    const released = releasedReservations[0];
+    if (!released) throw new Error('no reservation records the failed creation');
+    for (const runtime of live) assert.equal(createWorktree(wave.sessionId, runtime.name).ok, true, `${runtime.ref} is created`);
+    assert.equal(wave.recorded(released).worktree || null, null, `${released.ref} was rebound by a later sibling hook`);
+    const bound = wave.runtimes.filter(runtime => runtime !== released).map(runtime => wave.recorded(runtime).worktree).sort();
+    assert.deepEqual(bound, live.map(runtime => worktrees.canonicalPath(runtime.path)).sort(), 'the live siblings hold the two created checkouts');
+    await claimEachOwnCheckout(wave, live);
+    const unclaimed = wave.runtimes.filter(runtime => !store.getTicket(slug, runtime.ref).claim);
+    assert.equal(unclaimed.length, 1, 'the claims leave exactly one reservation for the spawn that died');
+    const stranded = unclaimed[0];
+    if (!stranded) throw new Error('every reservation was claimed');
+    assert.equal(wave.recorded(stranded).worktree || null, null, `${stranded.ref} keeps no binding to a live sibling checkout`);
+    assert.equal(wave.recorded(stranded).outcome, 'launched', 'the stranded reservation stays retryable');
+  } finally {
+    wave.cleanup();
+  }
+});
+
 test('SQ-3147: a rotated crossing settles through the claim-time exchange when nobody is superseded', async () => {
   const { wave, two, three } = sq3147RotatedWave('rotation');
   try {

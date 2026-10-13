@@ -1146,7 +1146,7 @@ function attemptCommit(ticket?: any, opts?: any) {
   return opts?.commit || ticket?.checkpoint?.commit || ticket?.submission?.commit || null;
 }
 
-type ObservedWorktree = { facts: ReturnType<typeof immutableWorktreeFacts>; registered: boolean; commits: string[] };
+type ObservedWorktree = { facts: ReturnType<typeof immutableWorktreeFacts>; registered: boolean; commits: string[]; pinned: ReadonlyMap<string, string> };
 type ObservedWorktreeFacts = ReadonlyMap<string, ObservedWorktree>;
 
 // A release observes its checkouts under the ticket file lock before BEGIN, so the write transaction reads facts
@@ -1160,7 +1160,12 @@ function observeReleaseWorktreeFacts(slug: string, ticket: StoredRecord): Observ
 
 function observeWorktree(slug: string, worktree: string, baseCommit: string): ObservedWorktree {
   const facts = immutableWorktreeFacts(slug, worktree);
-  return { facts, registered: registeredProjectCheckout(facts), commits: facts ? commitsSinceBaseline(facts.worktree, baseCommit, facts.revision) : [] };
+  return {
+    facts,
+    registered: registeredProjectCheckout(facts),
+    commits: facts ? commitsSinceBaseline(facts.worktree, baseCommit, facts.revision) : [],
+    pinned: facts ? pinnedCandidateRevisions(facts.repository) : new Map(),
+  };
 }
 
 function worktreeFactsFor(slug: string, worktree: string, observed?: ObservedWorktreeFacts) {
@@ -1171,17 +1176,29 @@ function observedCheckoutRegistered(worktree: string, facts: StoredRecord, obser
   return observed ? observed.get(canonicalPath(worktree))?.registered === true : registeredProjectCheckout(facts);
 }
 
-function captureTerminalWorktreeRevision(slug?: any, state?: any, at?: any, observed?: ObservedWorktreeFacts) {
+function captureTerminalWorktreeRevision(slug?: any, ticket?: any, state?: any, at?: any, observed?: ObservedWorktreeFacts) {
   if (!terminalRevisionBound(slug, state)) return;
   const facts = worktreeFactsFor(slug, state.worktree, observed);
   if (!factsDescribeBoundCheckout(facts, state)) return;
   state.terminalWorktreeRevision = facts.revision;
   state.terminalWorktreeObservedAt = at;
-  recordTerminalCheckoutCommits(state, terminalCheckoutCommits(state, facts, observed));
+  const checkout = terminalCheckoutObservation(state, facts, observed);
+  recordTerminalCheckoutCommits(state, ownTerminalCheckoutCommits(slug, ticket, checkout.pinned, checkout.commits));
 }
 
-function terminalCheckoutCommits(state: StoredRecord, facts: WorktreeFacts, observed?: ObservedWorktreeFacts): string[] {
-  return observed ? observed.get(canonicalPath(state.worktree))?.commits ?? [] : commitsSinceBaseline(facts.worktree, state.baseCommit, facts.revision);
+// Under the write lock git is refused, so a release passes what it observed before BEGIN.
+function terminalCheckoutObservation(state: StoredRecord, facts: WorktreeFacts, observed?: ObservedWorktreeFacts): Pick<ObservedWorktree, 'commits' | 'pinned'> {
+  if (observed) return observed.get(canonicalPath(state.worktree)) ?? { commits: [], pinned: new Map() };
+  return { commits: commitsSinceBaseline(facts.worktree, state.baseCommit, facts.revision), pinned: pinnedCandidateRevisions(facts.repository) };
+}
+
+// A crossed checkout carries a sibling's commits; sanctioning them here made the SQ-75 ownership check read the
+// sibling's checkout as this ticket's own and resume it.
+function ownTerminalCheckoutCommits(slug: string, ticket: StoredRecord, pinned: ReadonlyMap<string, string>, commits: readonly string[]): string[] {
+  const siblingRevisions = listTickets(slug)
+    .filter((other: StoredRecord) => isOtherTicket(other, ticket))
+    .flatMap((other: StoredRecord) => ticketRecordedRevisions(other, dispatchState(other), pinned));
+  return commits.filter(commit => !recordsRevision(siblingRevisions, commit));
 }
 
 // The board commit tool was the only writer, so a generation whose executor committed with raw git in its
@@ -1246,7 +1263,7 @@ function setDispatchTerminal(ticket?: any, outcome?: any, source?: any, opts?: a
   const state = dispatchState(ticket);
   if (!state) return;
   const at = new Date().toISOString();
-  captureTerminalWorktreeRevision(opts?.slug, state, at);
+  captureTerminalWorktreeRevision(opts?.slug, ticket, state, at);
   const release = opts?.releaseKind ? {
     kind: opts.releaseKind,
     reason: opts.releaseReason || null,
@@ -1591,7 +1608,7 @@ function pinnedCandidateRevisions(repository?: any) {
   return pinned;
 }
 
-function ticketRecordedRevisions(ticket?: any, state?: any, pinned?: Map<string, string>): string[] {
+function ticketRecordedRevisions(ticket?: any, state?: any, pinned?: ReadonlyMap<string, string>): string[] {
   const attempts = Array.isArray(state?.attempts) ? state.attempts : [];
   return [
     ...(Array.isArray(state?.sanctionedCommits) ? state.sanctionedCommits : []),
@@ -3252,14 +3269,18 @@ function recoverDispatchQuotaFailure(slug?: any, idOrRef?: any, opts?: any) {
   });
 }
 
+function launchedIsolatedReservation(state?: any, sessionId?: any) {
+  return Boolean(state && state.sessionId === sessionId && state.sharedTree === false && state.outcome === 'launched' && !state.terminalAt);
+}
+
+// A reservation a failed sibling creation released is held for the claim that proves whose it was; letting a later
+// hook rebind it left the last sibling of the message with no record and nothing to trade at claim (GH-406).
+function holdsNoCheckout(state: any) {
+  return !state.worktree && !state.continuation?.sourceWorktree && state.worktreeBindingExchange?.reason !== 'worktree_create_failed';
+}
+
 function dispatchCreationCandidate(state?: any, sessionId?: any) {
-  return Boolean(state
-    && state.sessionId === sessionId
-    && state.sharedTree === false
-    && state.outcome === 'launched'
-    && !state.terminalAt
-    && !state.worktree
-    && !state.continuation?.sourceWorktree);
+  return launchedIsolatedReservation(state, sessionId) && holdsNoCheckout(state);
 }
 
 // A WorktreeCreate that finds only a PREPARED dispatch for its session means the

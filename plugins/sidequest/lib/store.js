@@ -2790,7 +2790,7 @@ function releaseReasonText(opts) {
   return String(opts.releaseReason || "").trim() || null;
 }
 function terminateReleasedDispatch(request, closeout, terminalOutcome, release, now) {
-  captureTerminalWorktreeRevision(request.slug, closeout.dispatch, now, closeout.releaseWorktreeFacts);
+  captureTerminalWorktreeRevision(request.slug, closeout.t, closeout.dispatch, now, closeout.releaseWorktreeFacts);
   setDispatchTerminal(closeout.t, terminalOutcome, request.opts.source || "cli", {
     failureShape: request.opts.failureShape || release?.kind || "unknown",
     releaseKind: release?.kind,

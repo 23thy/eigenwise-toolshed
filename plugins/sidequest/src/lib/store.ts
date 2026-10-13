@@ -3225,7 +3225,7 @@ function releaseReasonText(opts: ReleaseOptions): string | null {
 // The checkout facts were observed before BEGIN, so the terminal revision is captured from them and
 // setDispatchTerminal gets no slug, which keeps it from reading Git under the write lock.
 function terminateReleasedDispatch(request: ReleaseRequest, closeout: ReleaseCloseout, terminalOutcome: string | undefined, release: ReleaseRecord | null, now: string): void {
-  captureTerminalWorktreeRevision(request.slug, closeout.dispatch, now, closeout.releaseWorktreeFacts);
+  captureTerminalWorktreeRevision(request.slug, closeout.t, closeout.dispatch, now, closeout.releaseWorktreeFacts);
   setDispatchTerminal(closeout.t, terminalOutcome, request.opts.source || 'cli', {
     failureShape: request.opts.failureShape || release?.kind || 'unknown',
     releaseKind: release?.kind,

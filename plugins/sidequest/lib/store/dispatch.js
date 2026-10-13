@@ -843,7 +843,12 @@ function createDispatch(dependencies) {
   }
   function observeWorktree(slug, worktree, baseCommit) {
     const facts = immutableWorktreeFacts(slug, worktree);
-    return { facts, registered: registeredProjectCheckout(facts), commits: facts ? commitsSinceBaseline(facts.worktree, baseCommit, facts.revision) : [] };
+    return {
+      facts,
+      registered: registeredProjectCheckout(facts),
+      commits: facts ? commitsSinceBaseline(facts.worktree, baseCommit, facts.revision) : [],
+      pinned: facts ? pinnedCandidateRevisions(facts.repository) : /* @__PURE__ */ new Map()
+    };
   }
   function worktreeFactsFor(slug, worktree, observed) {
     return observed ? observed.get(canonicalPath(worktree))?.facts ?? null : immutableWorktreeFacts(slug, worktree);
@@ -851,16 +856,22 @@ function createDispatch(dependencies) {
   function observedCheckoutRegistered(worktree, facts, observed) {
     return observed ? observed.get(canonicalPath(worktree))?.registered === true : registeredProjectCheckout(facts);
   }
-  function captureTerminalWorktreeRevision(slug, state, at, observed) {
+  function captureTerminalWorktreeRevision(slug, ticket, state, at, observed) {
     if (!terminalRevisionBound(slug, state)) return;
     const facts = worktreeFactsFor(slug, state.worktree, observed);
     if (!factsDescribeBoundCheckout(facts, state)) return;
     state.terminalWorktreeRevision = facts.revision;
     state.terminalWorktreeObservedAt = at;
-    recordTerminalCheckoutCommits(state, terminalCheckoutCommits(state, facts, observed));
+    const checkout = terminalCheckoutObservation(state, facts, observed);
+    recordTerminalCheckoutCommits(state, ownTerminalCheckoutCommits(slug, ticket, checkout.pinned, checkout.commits));
   }
-  function terminalCheckoutCommits(state, facts, observed) {
-    return observed ? observed.get(canonicalPath(state.worktree))?.commits ?? [] : commitsSinceBaseline(facts.worktree, state.baseCommit, facts.revision);
+  function terminalCheckoutObservation(state, facts, observed) {
+    if (observed) return observed.get(canonicalPath(state.worktree)) ?? { commits: [], pinned: /* @__PURE__ */ new Map() };
+    return { commits: commitsSinceBaseline(facts.worktree, state.baseCommit, facts.revision), pinned: pinnedCandidateRevisions(facts.repository) };
+  }
+  function ownTerminalCheckoutCommits(slug, ticket, pinned, commits) {
+    const siblingRevisions = listTickets(slug).filter((other) => isOtherTicket(other, ticket)).flatMap((other) => ticketRecordedRevisions(other, dispatchState(other), pinned));
+    return commits.filter((commit) => !recordsRevision(siblingRevisions, commit));
   }
   function recordTerminalCheckoutCommits(state, commits) {
     const recorded = Array.isArray(state.sanctionedCommits) ? state.sanctionedCommits.map(String) : [];
@@ -907,7 +918,7 @@ function createDispatch(dependencies) {
     const state = dispatchState(ticket);
     if (!state) return;
     const at = (/* @__PURE__ */ new Date()).toISOString();
-    captureTerminalWorktreeRevision(opts?.slug, state, at);
+    captureTerminalWorktreeRevision(opts?.slug, ticket, state, at);
     const release = opts?.releaseKind ? {
       kind: opts.releaseKind,
       reason: opts.releaseReason || null,
@@ -2610,8 +2621,14 @@ function createDispatch(dependencies) {
       return { ok: true, ticket: t, token: t.dispatchNonce, recovery };
     });
   }
+  function launchedIsolatedReservation(state, sessionId) {
+    return Boolean(state && state.sessionId === sessionId && state.sharedTree === false && state.outcome === "launched" && !state.terminalAt);
+  }
+  function holdsNoCheckout(state) {
+    return !state.worktree && !state.continuation?.sourceWorktree && state.worktreeBindingExchange?.reason !== "worktree_create_failed";
+  }
   function dispatchCreationCandidate(state, sessionId) {
-    return Boolean(state && state.sessionId === sessionId && state.sharedTree === false && state.outcome === "launched" && !state.terminalAt && !state.worktree && !state.continuation?.sourceWorktree);
+    return launchedIsolatedReservation(state, sessionId) && holdsNoCheckout(state);
   }
   function unlaunchedSessionDispatch(slug, sessionId) {
     return listTickets(slug).some((candidate) => {
