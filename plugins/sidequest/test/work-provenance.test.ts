@@ -61,8 +61,6 @@ test('a foreign commit after the inherited trial tip is still refused', () => {
 
 // Derived historical facts (SQ-3675)
 
-const { provenanceAdmissionHold } = require('../lib/store/work-provenance.js');
-
 const declaredFiles = ['lib/provenance.js', 'test/provenance.test.js'] as const;
 const thinPreparedAt = '2026-01-01T00:00:00.000Z';
 
@@ -122,8 +120,9 @@ test('a thin archived generation is accepted through baseCommit and sanctionedCo
   ]);
   assert.deepEqual(source.files.map((file: { path: string }) => file.path), declaredFiles);
   assert.equal(producer.dispatch.attempts.some(attempt => 'baseCommit' in attempt || 'sanctionedCommits' in attempt), false, 'derivation never rewrites the producer generation');
-  assert.match(provenanceAdmissionHold(provenance).message,
-    /Derived producer facts, not recorded by their generation: SQ-1 2026-01-01T00:00:00\.000Z baseCommit from capture:capture-in-generation; SQ-1 2026-01-01T00:00:00\.000Z sanctionedCommits from capture:capture-in-generation\./);
+  assert.deepEqual(source.derivedFacts.map((fact: { fact: string; derivedFrom: string[] }) => `${fact.fact} from ${fact.derivedFrom.join(', ')}`),
+    ['baseCommit from capture:capture-in-generation', 'sanctionedCommits from capture:capture-in-generation'],
+    'derived facts travel on the frozen source now that submission is no longer held');
 
   fixture.git('checkout', '-q', 'producer');
   fixture.git('merge', '-q', '--no-edit', 'main');

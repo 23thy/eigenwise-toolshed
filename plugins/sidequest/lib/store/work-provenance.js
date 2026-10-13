@@ -32,7 +32,6 @@ __export(work_provenance_exports, {
   authorizeWorkDeclaration: () => authorizeWorkDeclaration,
   ownedWorkPaths: () => ownedWorkPaths,
   prepareWorkProvenance: () => prepareWorkProvenance,
-  provenanceAdmissionHold: () => provenanceAdmissionHold,
   workDeclaration: () => workDeclaration
 });
 module.exports = __toCommonJS(work_provenance_exports);
@@ -272,17 +271,11 @@ function ownedWorkPaths(root, provenance, paths, lookup) {
   requireFact(provenance.kind !== "inherited-read-only" || owned.every((file) => (0, import_commit_scope.isInScope)(file, [".release/unreleased/"])), "inherited-read-only declaration has new owned work");
   return owned;
 }
-function provenanceAdmissionHold(provenance) {
-  if (!provenance) return;
-  const derived = provenance.sources.flatMap((source) => (source.derivedFacts ?? []).map((fact) => `${source.input.ref} ${source.input.preparedAt} ${fact.fact} from ${fact.derivedFrom.join(", ")}`));
-  return { ok: false, reason: "work_provenance_unverified", message: "Frozen work provenance is a factual declaration only. Execution, quality and source admission remain UNVERIFIED; checkpoint and release preparation, never submit it as accepted work." + (derived.length ? ` Derived producer facts, not recorded by their generation: ${derived.join("; ")}.` : "") };
-}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   WORK_KINDS,
   authorizeWorkDeclaration,
   ownedWorkPaths,
   prepareWorkProvenance,
-  provenanceAdmissionHold,
   workDeclaration
 });
