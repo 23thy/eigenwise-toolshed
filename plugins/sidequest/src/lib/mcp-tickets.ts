@@ -26,6 +26,8 @@ const {
   provenNoOpCloseout,
   PROJECT_PROP,
   FILES_PROP,
+  ADD_FILES_PROP,
+  REMOVE_FILES_PROP,
   LABELS_PROP,
   CONTRACT_PROP,
   MODEL_FILTER_PROP,
@@ -262,6 +264,8 @@ const tools: ToolDefinition[] = [
         project: PROJECT_PROP,
         ...TICKET_FIELD_PROPS,
         status: { type: 'string', enum: store.VALID_STATUS },
+        addFiles: ADD_FILES_PROP,
+        removeFiles: REMOVE_FILES_PROP,
         by: { type: 'string', description: 'Human-readable update label. It cannot authorize closeout fields on a live claim.' },
         workingTreeDelivery: { type: 'boolean', description: 'Orchestrator-only live-claim declaration for a shared-checkout deliverable that forbids commits. The executor closes with done after the pinned verify-capture records the final declared working-tree paths.' },
         verifyKind: { type: 'string', enum: store.VERIFY_ORACLE_KINDS, description: 'Verification kind for future dispatches. An open dispatch keeps its pinned kind. command, suite and typecheck execute a validated command; document, link, schema, manual, review, attestation, and custom retain their evidence contract. attestation requires attestationArtifact, and attestationArtifact is rejected when verifyKind is command.' },
@@ -316,7 +320,7 @@ const tools: ToolDefinition[] = [
         : null;
       if (verificationAmendmentRefusal) return Object.assign({ project: slug }, verificationAmendmentRefusal);
       const patch: any = { source: 'mcp', by: String(args.by || '').trim() || null };
-      for (const k of ['title', 'description', 'priority', 'status', 'highStakes', 'labels', 'files', 'complexity']) {
+      for (const k of ['title', 'description', 'priority', 'status', 'highStakes', 'labels', 'files', 'addFiles', 'removeFiles', 'complexity']) {
         if (args[k] !== undefined) patch[k] = args[k];
       }
       if (args.produces !== undefined || args.changes !== undefined || args.consumes !== undefined) {

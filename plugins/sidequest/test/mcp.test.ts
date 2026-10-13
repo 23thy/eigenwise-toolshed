@@ -1162,8 +1162,8 @@ test('MCP accepts curated natural aliases and names each accepted mapping', asyn
 
 test('add accepts every ticket field update accepts, built from one schema (GH-424)', async () => {
   const properties = (name: string) => Object.keys((mcp.toolDescriptors() as any[]).find((tool) => tool.name === name).inputSchema.properties);
-  // ref, status, and by describe an existing ticket, and admitComposition is a separate main-only action, so they stay update-only; the rest of update must file at creation.
-  const missingOnAdd = properties('update').filter((field) => !['ref', 'status', 'by', 'admitComposition'].includes(field) && !properties('add').includes(field));
+  // ref, status, and by describe an existing ticket, admitComposition is a separate main-only action, and addFiles/removeFiles edit an existing scope, so they stay update-only; the rest of update must file at creation.
+  const missingOnAdd = properties('update').filter((field) => !['ref', 'status', 'by', 'admitComposition', 'addFiles', 'removeFiles'].includes(field) && !properties('add').includes(field));
   assert.deepEqual(missingOnAdd, [], 'a field valid on update must be valid on add');
 
   const project = store.ensureProject(fs.mkdtempSync(path.join(os.tmpdir(), 'sq-mcp-add-parity-'))).slug;

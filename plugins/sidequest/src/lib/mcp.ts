@@ -76,7 +76,9 @@ const DEFAULT_PROTOCOL_VERSION = '2025-06-18';
 // Raised from 27300 for dispatch.workProvenance (SQ-3630): measured payload 25325 bytes, all added schema structure since compactSchema strips the authored description. Keeps the 2.5KB reserve.
 // Raised from 27850 for add/update verifyKind typecheck (SQ-3644): +44 bytes of enum structure, measured 25394 payload bytes. Keeps the 2.5KB reserve.
 // Raised from 27900 for the GH-424 shared add/update field schema merged with develop: measured 25425 payload bytes, +31 net over develop (add now also accepts externalDeliverable). Keeps the 2.5KB reserve.
-const MCP_TOOLS_LIST_MAX_BYTES = 28000;
+// Raised from 27900 for update.addFiles/removeFiles and scopeRequest.grant (GitHub #173): +535 bytes compacted, measured 25929 payload bytes on the merged tree. Keeps the 2.5KB reserve.
+// Merged 13 Oct: both raises apply (shared field schema plus addFiles/removeFiles/scopeRequest.grant); measured 26255 payload bytes on the merged tree. Keeps the 2.5KB reserve.
+const MCP_TOOLS_LIST_MAX_BYTES = 28800;
 const MCP_TOOLS_LIST_HEADROOM_BYTES = 2500;
 
 function serverVersion() {
@@ -324,7 +326,11 @@ const MCP_SCHEMA_PROPERTY_DESCRIPTIONS: Record<string, Record<string, string>> =
   },
   add: { complexity: 'Legacy score; why required.', verify: ATTESTATION_VERIFY_CONTRACT },
   claim: { force: 'Operator-only.' },
-  update: { verify: ATTESTATION_VERIFY_CONTRACT },
+  update: {
+    verify: ATTESTATION_VERIFY_CONTRACT,
+    addFiles: 'Appends, keeps rest. Refused with files. Applied before removeFiles.',
+    removeFiles: 'Drops only these, keeps rest. Refused with files, and for a path this ticket does not declare. An isolated live dispatch loses them at once; a shared-tree one keeps them until redispatch.',
+  },
   supersede_submission: { supersededBy: 'Repair ticket ref, not a commit.' },
   comments: {
     since: 'Comment id or ISO timestamp.',
@@ -359,6 +365,9 @@ const MCP_SCHEMA_PROPERTY_DESCRIPTIONS: Record<string, Record<string, string>> =
   verdict: {
     outcome: 'Candidate, not reviewer prose.',
     correct: 'Main-thread accepted-to-rejected correction; requires rejected/by/text. expectedVerdictAt: list({ref}).ticket.oracle.verdict.at. Exactly one commit or sourceRevision.',
+  },
+  scopeRequest: {
+    grant: 'Grants every path this claim still has refused; pass no files. Refuses the claim holder’s own by.',
   },
 };
 
