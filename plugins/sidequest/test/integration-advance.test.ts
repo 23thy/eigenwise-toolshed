@@ -1266,7 +1266,7 @@ test('integration does not derive an unlocked greenfield suite after submission'
 
 // GH-308. A sibling that submits while the post-merge suite runs records the delivery merge as its expected
 // upstream. Rolling the target back without rewriting that record left the sibling refused as diverged forever.
-test('a post-merge rollback restores a sibling expected upstream that recorded the rolled-back merge', () => {
+test('GH-399: rollback preserves captures, re-gates an independent sibling and names a missing dependency', () => {
   const fixture = makeRepo('post-merge-sibling-upstream');
   const { slug } = store.ensureProject(fixture.repo);
   const first = store.createTicket(slug, { title: 'rolled back delivery', category: 'codebase-exploration', files: ['feature.txt'] });
@@ -1275,6 +1275,11 @@ test('a post-merge rollback restores a sibling expected upstream that recorded t
   git(['worktree', 'add', '-b', 'worktree-agent-sibling', siblingWorktree, 'main'], fixture.repo);
   const siblingCommit = commitFile(siblingWorktree, 'sibling.txt', 'sibling work\n');
   const sibling = store.createTicket(slug, { title: 'sibling submitted mid-suite', category: 'codebase-exploration', files: ['sibling.txt'] });
+  const dependent = store.createTicket(slug, { title: 'sibling based on rolled back delivery', category: 'codebase-exploration', files: ['dependent.txt'] });
+  const dependentWorktree = path.join(fixture.repo, '.claude', 'worktrees', 'agent-dependent');
+  assert.equal(store.claimTicket(slug, dependent.ref, 'dependent-worker', { direct: true, reason: 'The integration fixture requires a local direct claim.' }).ok, true);
+  const siblingVerify = nodeVerify("const fs=require('node:fs'); process.exit(fs.existsSync('sibling.txt') && !fs.existsSync('feature.txt') ? 0 : 9)");
+  const snapshot = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sq-rollback-capture-')), 'submission.json');
   const siblingRef = `refs/sidequest/${sibling.ref}`;
   git(['update-ref', siblingRef, siblingCommit], siblingWorktree);
   assert.equal(store.claimTicket(slug, sibling.ref, 'sibling-worker', { direct: true, reason: 'The integration fixture requires a local direct claim.' }).ok, true);
@@ -1288,8 +1293,21 @@ const store = require(${JSON.stringify(path.join(libDirectory, 'store.js'))});
 const commitScope = require(${JSON.stringify(path.join(libDirectory, 'commit-scope.js'))});
 const worktree = ${JSON.stringify(siblingWorktree)};
 const range = commitScope.submissionRange(worktree, { commit: ${JSON.stringify(siblingCommit)}, gitRef: ${JSON.stringify(siblingRef)}, upstream: 'main', integrationBranch: 'main' });
-const submitted = store.submitTicket(${JSON.stringify(slug)}, ${JSON.stringify(sibling.ref)}, 'sibling-worker', { commit: ${JSON.stringify(siblingCommit)}, gitRef: ${JSON.stringify(siblingRef)}, range, worktree });
+const submitted = store.submitTicket(${JSON.stringify(slug)}, ${JSON.stringify(sibling.ref)}, 'sibling-worker', { commit: ${JSON.stringify(siblingCommit)}, gitRef: ${JSON.stringify(siblingRef)}, range, worktree, verify: ${JSON.stringify(siblingVerify)} });
 if (!submitted.ok) { console.error(JSON.stringify(submitted)); process.exit(3); }
+require('node:fs').writeFileSync(${JSON.stringify(snapshot)}, JSON.stringify(submitted.ticket.submission));
+const dependentWorktree = ${JSON.stringify(dependentWorktree)};
+const git = (argumentsList, cwd = process.cwd()) => execFileSync('git', argumentsList, { cwd, encoding: 'utf8' }).trim();
+git(['worktree', 'add', '-b', 'worktree-agent-dependent', dependentWorktree, 'main']);
+require('node:fs').writeFileSync(require('node:path').join(dependentWorktree, 'dependent.txt'), 'depends on feature');
+git(['add', 'dependent.txt'], dependentWorktree);
+git(['commit', '-m', 'dependent candidate'], dependentWorktree);
+const dependentCommit = git(['rev-parse', 'HEAD'], dependentWorktree);
+const dependentRef = ${JSON.stringify(`refs/sidequest/${dependent.ref}`)};
+git(['update-ref', dependentRef, dependentCommit], dependentWorktree);
+const dependentRange = commitScope.submissionRange(dependentWorktree, { commit: dependentCommit, gitRef: dependentRef, upstream: 'main', integrationBranch: 'main' });
+const dependentSubmitted = store.submitTicket(${JSON.stringify(slug)}, ${JSON.stringify(dependent.ref)}, 'dependent-worker', { commit: dependentCommit, gitRef: dependentRef, range: dependentRange, worktree: dependentWorktree });
+if (!dependentSubmitted.ok) { console.error(JSON.stringify(dependentSubmitted)); process.exit(4); }
 process.exit(7);
 `);
   store.updateTicket(slug, first.ref, { executorVerifyKind: 'suite', executorVerify: `"${process.execPath}" "${verifier}"` });
@@ -1300,9 +1318,19 @@ process.exit(7);
   assert.equal(rolledBack.reason, 'verification_failed_suite_post_merge', rolledBack.message);
   assert.equal(rolledBack.verify.exitCode, 7, 'the sibling submitted from inside the post-merge suite');
   assert.equal(head(fixture.repo), before);
-  assert.equal(store.getTicket(slug, sibling.ref).submission.upstreamCommit, before);
+  const captured = JSON.parse(fs.readFileSync(snapshot, 'utf8'));
+  assert.notEqual(captured.upstreamCommit, before, 'the immutable capture recorded the in-flight merge');
+  assert.deepEqual(store.getTicket(slug, sibling.ref).submission, captured, 'rollback must retain the genuine captured submission');
+  const refused = store.integrateSubmission(slug, dependent.ref, { mode: 'merge', target: fixture.target });
+  assert.equal(refused.reason, 'expected_upstream_diverged', refused.message);
+  assert.match(refused.message, new RegExp(`Missing candidate dependency: .*${first.ref}.*${fixture.submitted}`));
+  assert.equal(head(fixture.repo), before, 'dependent refusal leaves the current target alone');
   const delivered = store.integrateSubmission(slug, sibling.ref, { mode: 'merge', target: fixture.target });
   assert.equal(delivered.ok, true, delivered.message);
+  assert.equal(delivered.integration.verify.command, siblingVerify, 'the current delivery runs the sibling gate');
+  assert.equal(delivered.integration.verify.exitCode, 0, 'the gate sees sibling content without the rolled-back feature');
+  assert.equal(store.getTicket(slug, sibling.ref).submission.upstreamCommit, captured.upstreamCommit);
+  assert.equal(store.getTicket(slug, sibling.ref).submission.commit, captured.commit);
 });
 
 // GH-246 / GH-247 / GH-273: the gate verifier reports where it ran and what it saw, so each case proves

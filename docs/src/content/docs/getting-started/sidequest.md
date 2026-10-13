@@ -463,6 +463,8 @@ The correction appends an audit and comment, preserves the original verdict, com
 
 **Integration stops because the work already landed on the remote.** Your local target branch is behind a commit that already contains the candidate, usually because someone merged it outside the board. Sidequest refuses instead of merging, and it does not move your branch, fetch, or run the check. For a group, it checks every participant before touching anything, so nothing is half delivered. Fetch and bring the local branch forward yourself, then ask Claude to retry the closure.
 
+**A rollback leaves a sibling with `expected_upstream_diverged`.** Sidequest checks the sibling's recorded candidate base against the current target. An independent candidate whose base is still reachable can integrate with its original range and verification capture intact; delivery runs its gate on the current merged tree. A candidate based on missing work stays refused, with the missing ticket and commit named when the board still has that submission. Rollback keeps sibling capture records unchanged.
+
 **A submission sat so long it can no longer be integrated.** Ask Claude to check whether the requested behavior already reached the intended branch. If it did, Claude records that evidence; if it did not, the work needs a fresh ticket against current source.
 
 ## Support
