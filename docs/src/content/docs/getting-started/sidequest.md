@@ -471,7 +471,10 @@ See the [generated Sidequest reference](../../reference/sidequest/) for agent-fa
 The main Claude thread can freeze `dispatch.workProvenance` as `new-behavior`,
 `behavior-preserving-refactor`, or `inherited-read-only`. Sources name an exact native producer
 generation and its immutable owned commit. Sidequest records the source/test bytes and any
-existing capture's candidate, command and nonce. Changed bytes or generations refuse. Workers
+existing capture's candidate, command and nonce. Changed bytes or generations refuse. When a
+producer fast-forwarded a whole branch first (say a trial branch), the commits reachable from a
+branch holding none of its own work count as inherited; only commits after that inherited tip are
+checked for ownership and scope, and the tip is frozen on the source. Workers
 cannot grant this authority to themselves, and a declaration cannot change a running dispatch.
 
 Unchanged inherited tests and declared GREEN refactors don't need fabricated historical reds.
