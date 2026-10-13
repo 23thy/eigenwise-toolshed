@@ -8,6 +8,69 @@ Releases before v3.208.0 predate this file and are not backfilled; `git log` is 
 those. Entries are generated from `.release/unreleased/*.md` by `scripts/release/cut.mjs`, so
 nothing here is hand-written.
 
+## v3.596.0 (2026-10-13)
+
+### Repository
+
+- crap.mjs removes its toolshed-crap-* coverage directory when a suite fails (GH-464)
+  A failing suite used to leave the whole V8 coverage directory behind in the temp directory.
+
+### quality-gate 0.2.0 → 0.3.0
+
+#### Features
+
+- Isolate undecodable sources and select files from the CLI (SQ-3679)
+  Undecodable and malformed Python files report per-file UNVERIFIED rows without stopping other measurements. Repeat --source to narrow configured sources for one run.
+- Restore the not-worse complexity ratchet (SQ-3689)
+  Equal or lower complexity legacy edits are informational, while new and raised bodies stay below 6.
+
+#### Fixes
+
+- Prefer fresh command LCOV over configured fallback (SQ-3593)
+  Fresh isolated command coverage takes precedence over configured LCOV. Explicit CLI overrides and source/hash/freshness checks stay in place.
+
+### sidequest 5.10.0 → 5.11.0
+
+#### Features
+
+- Resume retained checkpoints on replacement dispatch (SQ-3651)
+  Replacement dispatches lead with retained checkpoint and verification facts so executors resume work without re-deriving the full thread. Briefings point at shared lifecycle rules instead of repeating them.
+- Work provenance derives baseCommit and sanctionedCommits for older generations (SQ-3675)
+  Generations written before 5.10.0 kept only route, token and timestamps, and every generation whose executor committed with raw git never got `sanctionedCommits`, because the board `commit` tool was the only writer. A `workProvenance` source naming one of those generations was always refused by fact name. Now a missing `baseCommit` is derived from the generation's first git verification capture (its single merge base with the integration branch) and missing `sanctionedCommits` from the commits between that base and each of the generation's capture candidates. Each derived fact is frozen with `derivedFrom` (the capture ids) and listed in the admission hold message. When the base is ambiguous (the candidate is already on the integration branch, or there's no single merge base) or the generation has no usable capture, the refusal still names the missing fact and says why.
+
+  Going forward, an isolated dispatch records the commits its own checkout made since its base as `sanctionedCommits` when it turns terminal, so raw-git generations carry the fact without derivation. `declaredFiles` and `verificationRequirement` are still never inferred.
+- Let a provenance-declared dispatch submit and integrate like any other (SQ-3676)
+
+#### Fixes
+
+- Verify wrapper no longer aborts on unquoted [param] paths under zsh, and pinned verify strings warn about unquoted globs (GH-171)
+  The verify-capture wrapper writes setopt nonomatch nobadpattern into the generated script when the selected POSIX shell is zsh (including a SHELL symlink under another name that resolves to zsh), so an unquoted dynamic-route path like [id] passes through literally instead of aborting the pinned command with "no matches found" or, for an unbalanced bracket, "bad pattern". A pinned verify string with an unquoted path containing glob metacharacters ([ ] * ?) now also gets a warning (not a refusal) at add/update and in the executor briefing, and the advice is split by token kind. A literal bracket path is quoted for tools that take literal paths (e.g. tsc, pytest), and quoted and escaped as [[]id] for runners that glob their own arguments (e.g. node --test), where a quoted bare [id] is read as a character class and runs 0 tests while still exiting 0. An intended * or ? glob is quoted for runners that glob their own arguments and left unquoted for tools that expect the shell to expand it, where quoting is a hard error.
+- update gains addFiles/removeFiles and orchestrators can grant a refused scope request without a redispatch (GH-173)
+- Read a negative-control marker field by field (GH-181)
+  A negative-control marker whose `target=` value contained a semicolon, such as two paths joined with `;` or prose like `a; b`, stopped the parse at that semicolon, and the completion gate refused it with the message it gives a marker that names no evidence at all. Each field is now read up to the delimiter that introduces the next one, so a semicolon inside `target=` is data, and a marker that genuinely cannot be parsed is quoted back with the field it stopped at instead of reading as though nothing was posted.
+
+  The same check attributed a hunk inside an `it.each` or `test.each` table to the nearest preceding plain `it(`, which demanded negative-control evidence for a test the diff never touched. A table-driven test is now recognised by the name that follows its table, so the hunk reports that test.
+- Add sidequest sync-check so the briefing's worktree sync check needs no raw git command or trailing echo (GH-422)
+  Executors read the briefing's raw merge-base check through a trailing echo of the exit status, and an isolated worktree's Bash guard refuses that compound command. The briefing now prints one `sync-check` command that reports `ok` or `FAILED <reason>` on one line and exits 0 or 1. The trailing-echo relaxation lives in Claude Code's own Bash guard, outside this repository, so this change does not include it.
+- Board calls fail less on argument shape: add takes update's ticket fields, rework defaults by and stores over-long text as a comment, link accepts dependsOn (GH-424)
+- Worktree sweep removes a finished ticket's tree that holds gitignored build output, reads git status four trees at a time, and runs detached at SessionEnd (GH-439)
+  Fixes GH-439. The sweep judged untracked and ignored files before it asked the ticket, so every finished executor tree (node_modules, .next, coverage, tsconfig.tsbuildinfo) waited 7 days as untracked_recent and 14 more in quarantine, and one done tree took about 10 seconds to classify. The new ticket_closed_settled reason removes the tree of a done, archived, removed, or released ticket at any age when its HEAD is on the integration branch, in refs/sidequest/<ref> (never for a released ticket), or at its dispatch base. A tracked change still keeps the tree. An untracked file that is not ignored, a gitignored nested repository, or an ignored link that resolves outside the tree still sends it to the older reasons. The integrate, groomClose, done, release, and remove tools now reclaim the ticket's own tree at close, except while the closing executor's claim is live. Git status runs four trees at a time with a 60-second limit per tree, and the sweep counts the reads that timed out. Bounded sweeps take closed-ticket trees first. SessionEnd starts a detached sweep under a lock and returns at once. `worktrees sweep` ends with the count per reason and the wall time.
+- Board MCP server keeps a live, slow client whose heartbeat answer arrives late (GH-446) [`90903a2`](https://github.com/Eigenwise/eigenwise-toolshed/commit/90903a2ee61f0070569daa0fcef8fce8321f006e)
+- The context-restored briefing retires a terminal ticket's still-running executor (GH-513)
+  Fixes GH-513. After a context restore, the orchestrator briefing told the orchestrator to believe the board over background-task reminders and not investigate them. It now keeps the board as the authority for ticket state, but sends a terminal ticket's still-running executor to the existing retire step (TaskStop once). This stops a finished executor from keeping a background task alive for days.
+- Same-message spawns no longer die on `already_bound` when their WorktreeCreate hooks race (GH-406) (SQ-3433)
+  Agent spawns sent in one message run their WorktreeCreate hooks at the same time. Every hook read the same board snapshot and went for the same first free reservation. The losers refused with `worktree lease refused creation: already_bound` even though a sibling reservation was still free. Their spawns died, and the executor that did start was left with no checkout binding for its own ticket. A hook that loses that race now takes the next free reservation. The hook payload still names no ticket (only `agent-<agentId>`, which no reservation knows yet), so creation can still cross two siblings. The claim-time exchange then gives each executor its own checkout, as before.
+- A prepared dispatch keeps its route when the provider drops out before the claim (SQ-3559)
+  A Codex dispatch prepared while the gateway was ready briefed its executor the Codex route and effort, but if Codex readiness dropped before the claim, every ticket read swapped in the category fallback. The claim then failed as `effort_mismatch` against the fallback's effort (seen as Sol·xhigh briefed, sonnet·high refused), and a claim at the fallback effort was wrongly admitted. The active prepared route now governs the ticket's model and effort for the whole attempt, whatever the provider's readiness. Token, executor and real effort mismatch checks are unchanged, and a new dispatch while the provider is down still takes the category fallback.
+- Accept typed executor refusal evidence and resolve pinned submission verifiers (SQ-3647)
+- Keep read-only shell literals and scratch writes out of repository write detection (SQ-3650)
+- Work provenance skips inherited trial-branch commits (SQ-3674)
+  A work provenance declaration no longer refuses a producer that fast-forwarded a whole branch as its first step. Commits reachable from a branch holding none of the generation's own commits count as inherited, so only the commits authored inside the generation are judged for ownership and scope. The inherited tips are frozen on the source origin, so the branch moving later doesn't break re-checks. A foreign commit after the inherited tip is still refused.
+- Reconcile independent submissions after delivery rollback (SQ-3685)
+  Delivery rollback preserves sibling submission captures. Independent candidates whose recorded base remains on the target can integrate after full range revalidation and a fresh merged-tree gate. Candidates based on missing work stay refused, naming the missing dependency ticket and commit.
+- Agent-guidance survival test follows the briefing lifecycle pointer (SQ-3688)
+  The agent-guidance suite asserts the executor briefing points at the lifecycle reference and that the executor template still carries the continuation-checkpoint guidance, matching the shorter briefing SQ-3651 shipped.
+
 ## v3.595.0 (2026-10-12)
 
 ### model-gateway 0.54.2 → 0.54.3
