@@ -9,6 +9,7 @@ const { WHOLE_TREE_SCOPE } = require('../commit-scope.js');
 const { compositionCheckoutCommit, consumePreparedComposition, consumedAdmissionRefusal } = require('./composition-admission.js');
 import type { CompositionDispatch, CompositionTicket } from './composition-admission';
 import type { VerificationRequirement } from '../kernel/verification';
+import { authorizeWorkDeclaration, prepareWorkProvenance, workDeclaration } from './work-provenance';
 
 type NativeCheckoutCreation = CompositionDispatch & {
   sessionId?: string | null; worktreeBindingSource?: string;
@@ -26,6 +27,8 @@ type NativeCheckoutFacts = {
   gitDirectory: string; commonGitDirectory: string; checkoutInstance: string; revision: string;
 };
 type NativeCheckoutCompletion = { ok: true; alreadyCompleted: boolean } | { ok: false; reason: string };
+// Git output read before the write transaction; checkoutStatus is null when git could not report it.
+type ObservedNativeCheckout = { facts: NativeCheckoutFacts | null; checkoutStatus?: string | null };
 
 function unscopedWriteCannotAutoApprove(ticket?: any, options?: any) {
   const { dispatchReadOnly, normalizeFiles, autoApproveScope } = options;
@@ -120,8 +123,26 @@ function recordVerificationAmendment(ticket: any, amendment: any, previousRequir
 // board left at the default pins nothing, so its requirements stay byte-identical.
 function pinnedVerificationRequirement(ticket: any, projectPath: string, verifyEnvironment: unknown, sharedTree: boolean) {
   const requirement = preparedVerificationRequirement(ticket, projectPath);
-  const deferred = !sharedTree && verifyEnvironment === 'shared' && ['command', 'suite'].includes(requirement.kind);
+  const deferred = !sharedTree && verifyEnvironment === 'shared' && ['command', 'suite', 'typecheck'].includes(requirement.kind);
   return deferred ? Object.freeze({ ...requirement, environment: 'shared' as const }) : requirement;
+}
+
+type ProducerAttemptHistory = {
+  preparedAt?: string; terminalAt?: string; baseCommit?: string; declaredFiles?: readonly string[];
+  sanctionedCommits?: readonly string[]; verificationRequirement?: { command?: string };
+  attempts: Array<{ preparedAt?: string }>;
+};
+
+function retainedAttemptHistory(current: ProducerAttemptHistory) {
+  const attempts = structuredClone(current.attempts);
+  const terminalAttempt = attempts.find(attempt => attempt.preparedAt === current.preparedAt);
+  if (current.terminalAt && terminalAttempt) {
+    Object.assign(terminalAttempt, structuredClone({
+      baseCommit: current.baseCommit, declaredFiles: current.declaredFiles,
+      sanctionedCommits: current.sanctionedCommits, verificationRequirement: current.verificationRequirement,
+    }));
+  }
+  return attempts;
 }
 
 function createDispatch(dependencies: any) {
@@ -1942,9 +1963,13 @@ function retireUnboundDispatchOnly(slug: string, idOrRef: string, opts: Dispatch
   return Object.assign(superseded, { retired: true });
 }
 
+function investigationWithoutRepositoryWrites(ticket: { files?: unknown; description?: string }): boolean {
+  return !normalizeFiles(ticket.files).length && /\bno repository writes\b/i.test(ticket.description || '');
+}
+
 function undeclaredScopeRefusal(slug: string, ticket: StoredRecord, opts: DispatchOptions): string | null {
   const noDeclaredFileScope = unscopedWriteCannotAutoApprove(ticket, {
-    dispatchReadOnly,
+    dispatchReadOnly: (candidate: StoredRecord) => dispatchReadOnly(candidate) || investigationWithoutRepositoryWrites(candidate),
     normalizeFiles,
     autoApproveScope: boardConfig(slug)?.autoApproveScope,
   });
@@ -2237,7 +2262,7 @@ function routedRecovery(t: StoredRecord, current: StoredRecord): StoredRecord | 
 
 function priorAttemptHistory(current: StoredRecord) {
   return {
-    attempts: Array.isArray(current?.attempts) ? current.attempts.slice() : [],
+    attempts: Array.isArray(current?.attempts) ? retainedAttemptHistory(current) : [],
     supersededTokens: Array.isArray(current?.supersededTokens) ? current.supersededTokens.slice() : [],
   };
 }
@@ -2317,7 +2342,7 @@ function assertReviewCheckoutIsolation(t: StoredRecord, reviewTargetState: Store
 }
 
 function dispatchIsolation(slug: string, t: StoredRecord, current: StoredRecord, opts: DispatchOptions, effectiveFiles: readonly string[]): DispatchIsolation {
-  const readonly = dispatchReadOnly(t);
+  const readonly = dispatchReadOnly(t) || investigationWithoutRepositoryWrites(t);
   const worktreeIsolation = normalizeWorktreeIsolation(readMeta(slug)?.worktreeIsolation);
   const reviewTargetState = reviewDispatchTarget(slug, t);
   const sharedTree = initialSharedTree(reviewTargetState, worktreeIsolation, requestedSharedTree(opts, current));
@@ -2736,8 +2761,12 @@ function priorAttemptFields(plan: PreparedDispatchPlan) {
 }
 
 function preparedDispatchRecord(slug: string, t: StoredRecord, current: StoredRecord, plan: PreparedDispatchPlan, opts: DispatchOptions, preflight: DispatchPreflight) {
+  const provenance = preparationProvenanceFields(plan, opts, preflight.preparedCompatibility);
+  const workProvenance = prepareWorkProvenance(preflight.projectPath, opts.workProvenance, String(opts.sessionId || ''), ref => getTicket(slug, ref));
   return {
-    ...preparationProvenanceFields(plan, opts, preflight.preparedCompatibility),
+    ...provenance,
+    lifecycleAttempt: { ...provenance.lifecycleAttempt, workProvenance },
+    workProvenance,
     ...checkoutPlacementFields(plan, preflight, opts),
     declaredFiles: plan.artifact.declaredFiles,
     boardAddedFiles: plan.artifact.boardAddedFiles,
@@ -2844,7 +2873,14 @@ function prepareUnderDispatchLocks(slug: string, idOrRef: string, found: StoredR
   }
 }
 
-function prepareDispatch(slug?: any, idOrRef?: any, opts?: any) {
+function prepareDispatch(slug: string, idOrRef: string, opts: Record<string, unknown> = {}, grant: { allowWorkProvenance?: boolean } = {}) {
+  const current = getTicket(slug, idOrRef)?.dispatch;
+  authorizeWorkDeclaration(opts.workProvenance, opts.sessionId, grant.allowWorkProvenance === true, Boolean(current && !current.terminalAt));
+  const declaration = opts.workProvenance === undefined ? undefined : workDeclaration(opts.workProvenance);
+  return prepareDispatchRequest(slug, idOrRef, { ...opts, workProvenance: declaration });
+}
+
+function prepareDispatchRequest(slug?: any, idOrRef?: any, opts?: any) {
   opts = opts || {};
   if (opts.retireOnly === true) return retireUnboundDispatchOnly(slug, idOrRef, opts);
   const { projectPath, found } = dispatchableTicket(slug, idOrRef, opts);
@@ -3548,37 +3584,46 @@ function compositionCheckoutWasReused(previous: CompositionDispatch, worktree: s
     previous.worktreeCheckoutInstance === facts.checkoutInstance].some(Boolean);
 }
 
-function cleanCompositionCheckoutRefusal(worktree: string): NativeCheckoutCompletion | undefined {
+function checkoutStatus(worktree: string): string | null {
   try {
-    if (gitOutput(worktree, ['status', '--porcelain'])) return { ok: false, reason: 'composition_checkout_dirty' };
+    return gitOutput(worktree, ['status', '--porcelain']);
   } catch {
-    return { ok: false, reason: 'composition_checkout_unobservable' };
+    return null;
   }
 }
 
-function compositionCheckoutIdentityRefusal(ticket: CompositionTicket, worktree: string, facts: NativeCheckoutFacts): NativeCheckoutCompletion | undefined {
+function observeNativeCheckout(slug: string, worktree: string, ticket: CompositionTicket): ObservedNativeCheckout {
+  return { facts: immutableWorktreeFacts(slug, worktree), checkoutStatus: ticket.compositionAdmission ? checkoutStatus(worktree) : undefined };
+}
+
+function cleanCompositionCheckoutRefusal(status: string | null | undefined): NativeCheckoutCompletion | undefined {
+  if (status == null) return { ok: false, reason: 'composition_checkout_unobservable' };
+  if (status) return { ok: false, reason: 'composition_checkout_dirty' };
+}
+
+function compositionCheckoutIdentityRefusal(ticket: CompositionTicket, worktree: string, facts: NativeCheckoutFacts, observed: ObservedNativeCheckout): NativeCheckoutCompletion | undefined {
   const admission = ticket.compositionAdmission;
   if (!admission) return;
   if (compositionCheckoutWasReused(admission.releasedDispatch, worktree, facts)) return { ok: false, reason: 'composition_checkout_reused' };
-  return cleanCompositionCheckoutRefusal(worktree);
+  return cleanCompositionCheckoutRefusal(observed.checkoutStatus);
 }
 
-function nativeCheckoutCompletionFacts(slug: string, worktree: string, state: NativeCheckoutCreation): NativeCheckoutFacts | { ok: false; reason: string } {
-  const facts: NativeCheckoutFacts | null = immutableWorktreeFacts(slug, worktree);
+function nativeCheckoutCompletionFacts(observed: ObservedNativeCheckout, state: NativeCheckoutCreation): NativeCheckoutFacts | { ok: false; reason: string } {
+  const facts = observed.facts;
   if (!facts) return { ok: false, reason: 'invalid_worktree_binding' };
   if (facts.revision !== String(compositionCheckoutCommit(state)).trim()) return { ok: false, reason: 'worktree_revision_mismatch' };
   return facts;
 }
 
-function completeNativeCheckoutForTicket(slug: string, id: string, binding: { sessionId: string; worktree: string }, attempt?: string): NativeCheckoutCompletion {
+function completeNativeCheckoutForTicket(slug: string, id: string, binding: { sessionId: string; worktree: string }, attempt: string | undefined, observed: ObservedNativeCheckout): NativeCheckoutCompletion {
   const ticket = getTicket(slug, id);
   const current: NativeCheckoutCreation | undefined = dispatchState(ticket);
   const generation = worktreeCallbackGenerationRefusal(current, attempt);
   if (generation) return { ...generation, ok: false };
   if (!launchedNativeCheckoutMatches(current, binding)) return { ok: false, reason: 'dispatch_binding_unavailable' };
-  const facts = nativeCheckoutCompletionFacts(slug, binding.worktree, current);
+  const facts = nativeCheckoutCompletionFacts(observed, current);
   if ('ok' in facts) return facts;
-  return compositionCheckoutIdentityRefusal(ticket, binding.worktree, facts)
+  return compositionCheckoutIdentityRefusal(ticket, binding.worktree, facts, observed)
     ?? recordNativeCheckoutCompletion(slug, ticket, current, facts);
 }
 
@@ -3588,8 +3633,9 @@ function completeDispatchWorktreeCreation(slug: string, sessionId?: string, work
   if (!binding) return { ok: false, reason: 'missing_binding_facts' };
   for (const candidate of listTickets(slug)) {
     if (!launchedNativeCheckoutMatches(dispatchState(candidate), binding)) continue;
+    const observed = observeNativeCheckout(slug, binding.worktree, candidate);
     return dependencies.withCompositionGenerationLock(slug, candidate.id,
-      () => completeNativeCheckoutForTicket(slug, candidate.id, binding, attempt));
+      () => completeNativeCheckoutForTicket(slug, candidate.id, binding, attempt, observed));
   }
   return { ok: false, reason: 'dispatch_binding_unavailable' };
 }
@@ -3724,9 +3770,8 @@ function recordDispatchWorktreeDependencyLink(slug?: any, sessionId?: any, workt
   return { ok: false, reason: 'dispatch_binding_unavailable' };
 }
 
-function recordRecoveredCheckoutIdentity(slug: string, state: NativeCheckoutCreation, worktree: string): void {
+function recordRecoveredCheckoutIdentity(state: NativeCheckoutCreation, facts: NativeCheckoutFacts | null): void {
   if (state.worktreeCreationCompletedAt) return;
-  const facts: NativeCheckoutFacts | null = immutableWorktreeFacts(slug, worktree);
   const checkoutCommit = String(compositionCheckoutCommit(state)).trim();
   if (facts && checkoutCommit && facts.revision === checkoutCommit) recordCreatedCheckoutIdentity(state, facts);
 }
@@ -3754,13 +3799,13 @@ function terminalizeFailedCheckoutCreation(slug: string, ticket: ExecutorDispatc
   putTicket(slug, ticket);
 }
 
-function recoverLaunchedCheckout(slug: string, id: string, binding: { sessionId: string; worktree: string }, error: unknown, attempt?: string, options?: { created?: boolean }) {
+function recoverLaunchedCheckout(slug: string, id: string, binding: { sessionId: string; worktree: string }, error: unknown, attempt: string | undefined, options: { created?: boolean } | undefined, facts: NativeCheckoutFacts | null) {
   const ticket: ExecutorDispatchedTicket = getTicket(slug, id);
   const state: NativeCheckoutCreation | undefined = dispatchState(ticket);
   const generation = worktreeCallbackGenerationRefusal(state, attempt);
   if (generation) return generation;
   if (!launchedNativeCheckoutMatches(state, binding)) return { ok: false, reason: 'dispatch_binding_unavailable' };
-  recordRecoveredCheckoutIdentity(slug, state, binding.worktree);
+  recordRecoveredCheckoutIdentity(state, facts);
   const held = holdOrReleaseUncreatedCheckout(slug, ticket, state, binding.sessionId, options?.created);
   if (held) return held;
   terminalizeFailedCheckoutCreation(slug, ticket, error);
@@ -3785,7 +3830,8 @@ function recoverDispatchWorktreeCreation(slug?: any, sessionId?: any, worktree?:
       && state.worktree && canonicalPath(state.worktree) === boundWorktree);
   });
   if (matches.length !== 1) return { ok: false, reason: matches.length ? 'ambiguous_binding' : 'dispatch_binding_unavailable' };
-  const terminal = withTicketLock(slug, matches[0].id, () => recoverLaunchedCheckout(slug, matches[0].id, { sessionId: normalizedSessionId, worktree: boundWorktree }, error, attempt, options));
+  const facts: NativeCheckoutFacts | null = dispatchState(matches[0]).worktreeCreationCompletedAt ? null : immutableWorktreeFacts(slug, boundWorktree);
+  const terminal = withTicketLock(slug, matches[0].id, () => recoverLaunchedCheckout(slug, matches[0].id, { sessionId: normalizedSessionId, worktree: boundWorktree }, error, attempt, options, facts));
   if (!terminal?.ok || terminal.heldFor) return terminal;
   const cleanup = reclaimRetiredAttemptCheckout(slug, meta.path, terminal.ticket, dispatchState(terminal.ticket));
   return { ok: true, ticket: terminal.ticket, cleanup };
@@ -4083,7 +4129,7 @@ function dispatchDelta(slug?: any, ticket?: any) {
       }).trim().split(/\r?\n/).filter(Boolean);
     }
     const committed = commits.length ? commitScope.rangePaths(workspace.root, commits) : [];
-    return { ok: true, workspace, ...workingState, committed };
+    return { ok: true, workspace, ...workingState, committed, commitCount: commits.length };
   } catch (error: any) {
     return { ok: false, reason: 'git_error', message: error?.message || String(error) };
   }
