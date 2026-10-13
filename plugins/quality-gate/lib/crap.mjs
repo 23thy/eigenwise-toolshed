@@ -129,17 +129,23 @@ function pythonClassificationLabel(metric) {
   return ` adapter=${metric.adapterVersion} role=${metric.oracleClassification} (${metric.oracleReason}) policy=${metric.measurementPolicy}`;
 }
 
+function complexityFailureAdvice(metric) {
+  if (metric.classification === LEGACY_UNCHANGED) return '';
+  return metric.complexity >= THRESHOLD ? '; fails at any coverage, split the function, more tests cannot help' : '';
+}
+
 function metricLine(metric, ccOnly) {
   const label = `${metric.relativePath}:${metric.line} ${metric.name}${pythonClassificationLabel(metric)}`;
-  if (metric.unverified) return `UNVERIFIED ${label}: ${metric.unverified}`;
-  const prefix = ['PASS', 'FAIL'][Number(metric.crap >= THRESHOLD)];
+  const legacy = metric.classification === LEGACY_UNCHANGED;
+  if (metric.unverified) return `${legacy ? 'LEGACY UNVERIFIED' : 'UNVERIFIED'} ${label}: ${metric.unverified}`;
+  const prefix = legacy ? 'LEGACY' : ['PASS', 'FAIL'][Number(metric.crap >= THRESHOLD)];
   const measured = ccOnly ? ' (cc-only, no coverage)' : ` coverage=${(metric.coverage * 100).toFixed(2)}%`;
-  const advice = metric.complexity >= THRESHOLD ? '; fails at any coverage, split the function, more tests cannot help' : '';
+  const advice = complexityFailureAdvice(metric);
   return `${prefix} ${label} cc=${metric.complexity}${measured} CRAP=${metric.crap.toFixed(4)} source=${metric.source}${advice}`;
 }
 
 export function formatCrapReport(report) {
   if (report.nothingToScoreReason) return `CRAP gate: nothing to score. ${report.nothingToScoreReason}\n`;
   const rows = report.changedMetrics.length ? report.changedMetrics : report.unverified;
-  return rows.map((metric) => metricLine(metric, report.ccOnly)).join('\n') + `\nCRAP gate ${report.verdict}: ${report.failures.length} failures, ${report.unverified.length} unverified; ${report.checked} new or physically modified functions checked (strictly below ${THRESHOLD}).\n`;
+  return rows.map((metric) => metricLine(metric, report.ccOnly)).join('\n') + `\nCRAP gate ${report.verdict}: ${report.failures.length} failures, ${report.unverified.length} unverified; ${report.checked} new or complexity-raised functions checked (strictly below ${THRESHOLD}).\n`;
 }

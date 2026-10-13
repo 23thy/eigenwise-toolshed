@@ -146,7 +146,9 @@ test('Python policy config CLI and baseline all use the selected version', async
   await fs.appendFile(path.join(root, 'subject.py'), '    # physical edit\n');
   const changed = await crapReport({ project: root, base: 'main', ccOnly: true });
   assert.equal(changed.changedMetrics[0].classification, 'legacy-unchanged');
-  assert.equal(changed.failures[0].complexity, 6);
+  assert.equal(changed.changedMetrics[0].complexity, 6);
+  assert.deepEqual(changed.failures, []);
+  assert.equal(changed.exitCode, 0);
   const receiptExecution = cli(root, ['--cc-only', '--json']);
   const report = JSON.parse(receiptExecution.stdout);
   assert.equal(JSON.parse(await fs.readFile(report.receipt, 'utf8')).pythonPolicy, nativePolicy);

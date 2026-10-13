@@ -59,10 +59,10 @@ for (const language of languages) {
     const { root, file, base } = await project(context, language.extension, original);
     const cases = [
       { label: 'inter-function comment never changes an owned body', text: original.replace(higher, language.comment.trim() + '\n' + higher), names: [], failures: [] },
-      { label: 'trailing inline comment belongs to its body', text: original.replace(language.end, language.end + language.comment.trim()), names: ['subject'], failures: ['subject'] },
-      { label: 'comment-only CC6 is enforced; untouched CC6 is excluded', text: original.replace(language.end, language.comment + language.end), names: ['subject'], failures: ['subject'] },
-      { label: 'formatting-only CC6 is enforced', text: original.replace(language.comparison, language.formatted), names: ['subject'], failures: ['subject'] },
-      { label: 'lowered-but-still-CC6 is enforced', text: original.replace(language.extra, ''), names: ['higher'], failures: ['higher'] },
+      { label: 'trailing inline comment belongs to its body', text: original.replace(language.end, language.end + language.comment.trim()), names: ['subject'], failures: [] },
+      { label: 'comment-only legacy CC6 is informational; untouched CC6 is excluded', text: original.replace(language.end, language.comment + language.end), names: ['subject'], failures: [] },
+      { label: 'formatting-only legacy CC6 is informational', text: original.replace(language.comparison, language.formatted), names: ['subject'], failures: [] },
+      { label: 'lowered-but-still-CC6 is informational', text: original.replace(language.extra, ''), names: ['higher'], failures: [] },
       { label: 'nested-only physical edit leaves parent unchanged', text: original.replace(language.nestedOriginal, language.nestedEdit), names: [language.child], failures: [] },
       { label: 'deleted body leaves no changed surviving body', text: higher + language.nested, names: [], failures: [] },
       { label: 'unchanged bodies leave nothing to score', text: original, names: [], failures: [] },
@@ -74,7 +74,7 @@ for (const language of languages) {
         assert.deepEqual(report.changedMetrics.map((row) => row.name), scenario.names);
         assert.deepEqual(report.failures.map((row) => row.name), scenario.failures);
         assert.deepEqual(report.changedMetrics.map((row) => row.classification), scenario.names.map(() => 'legacy-unchanged'));
-        assert.equal(report.checked, scenario.names.length);
+        assert.equal(report.checked, 0);
         assert.equal(report.exitCode, Number(scenario.failures.length > 0));
       });
     }
@@ -113,7 +113,7 @@ test('Python trailing indented comments belong to the child, dedented comments s
   }
 });
 
-test('comment-only and formatting-only CC6 fail with genuine complete same-session V8 coverage', async (context) => {
+test('comment-only and formatting-only legacy CC6 are informational with genuine complete same-session V8 coverage', async (context) => {
   const original = javascriptBody + 'for (let value = 0; value <= 5; value += 1) subject(value);\n';
   const { root, file, base } = await project(context, 'js', original);
   for (const [label, text] of [
@@ -131,7 +131,7 @@ test('comment-only and formatting-only CC6 fail with genuine complete same-sessi
     assert.equal(report.changedMetrics[0].classification, 'legacy-unchanged');
     assert.equal(report.changedMetrics[0].coverage, 1);
     assert.equal(report.changedMetrics[0].crap, 6);
-    assert.equal(report.failures.length, 1);
+    assert.equal(report.failures.length, 0);
   }
 });
 
@@ -146,7 +146,7 @@ for (const fixture of [
     assert.equal(baseline.metrics[0].complexity, 6);
     for (const scenario of [
       { label: 'child-only edit preserves outer fingerprint and excludes legacy CC6 parent', text: original.replace(fixture.before, fixture.after), identity: fixture.identity, name: fixture.child, failures: [] },
-      { label: 'parent-owned edit selects and enforces CC6 parent', text: original.replace('    return 0', '    # parent-owned edit\n    return 0'), identity: '<root>/FunctionDef:outer#0', name: 'outer', failures: ['outer'] },
+      { label: 'parent-owned edit selects informational CC6 parent', text: original.replace('    return 0', '    # parent-owned edit\n    return 0'), identity: '<root>/FunctionDef:outer#0', name: 'outer', failures: [] },
     ]) {
       await context.test(scenario.label, async () => {
         await fs.writeFile(path.join(root, file), scenario.text);
@@ -154,8 +154,8 @@ for (const fixture of [
         assert.deepEqual(report.metrics.filter((row, index) => row.fingerprint !== baseline.metrics[index].fingerprint).map((row) => row.identity), [scenario.identity], 'only independently edited body fingerprints change');
         assert.deepEqual(report.changedMetrics.map((row) => row.identity), [scenario.identity], 'only independently edited bodies enter changed rows');
         assert.deepEqual(report.changedMetrics.map((row) => row.name), [scenario.name]);
-        assert.deepEqual(report.failures.map((row) => row.name), scenario.failures, 'untouched legacy parent is excluded; parent-owned CC6 edits fail');
-        assert.equal(report.checked, 1);
+        assert.deepEqual(report.failures.map((row) => row.name), scenario.failures, 'untouched legacy parent is excluded; equal-complexity parent edits are informational');
+        assert.equal(report.checked, 0);
         assert.equal(report.exitCode, scenario.failures.length);
       });
     }

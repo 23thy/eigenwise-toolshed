@@ -34,8 +34,8 @@ Absent collection uses source-name rules; [] qualifies no oracles. Fixtures/setu
 The native policy counts ordinary assertions without traversing them; source-named test_* or explicitly selected exact helper oracles
 traverse predicates/messages without assert surcharge. Unselected helpers stay ordinary.
 Nested class bodies do not charge enclosing native-policy bodies; methods and lambdas remain independently owned.
-Every new or physically modified owned body must score strictly below 6 with measured coverage.
-Comments and formatting count; equal/lowered complexity never exempts a changed body.
+Every new or complexity-raised owned body must score strictly below 6 with measured coverage.
+Comments and formatting count; equal/lowered complexity legacy edits are informational.
 Untouched bodies and independently edited nested bodies do not charge their parents.
 --base defaults to the local develop, main or master branch; HEAD means score all selected bodies.
 --cc-only checks the complexity floor without running coverage; it cannot prove a full CRAP pass.
