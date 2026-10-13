@@ -24,7 +24,7 @@
 
 const path = require('path');
 const store = require('./store');
-const { compactSchema, conciseDescription, resolveProject, TOOL_DESCRIPTION_OVERRIDES, boundedReadPayload } = require('./mcp-shared');
+const { compactSchema, conciseDescription, resolveProject, runtimeSessionId, TOOL_DESCRIPTION_OVERRIDES, boundedReadPayload } = require('./mcp-shared');
 const { sidequestMutationFreshness } = require('./plugin-freshness');
 const { tools: readTools } = require('./mcp-read');
 const { tools: ticketTools } = require('./mcp-tickets');
@@ -42,7 +42,7 @@ type RpcId = string | number | null | undefined;
 type RpcMessage = { jsonrpc?: string; id?: RpcId; method?: string; params?: any };
 
 function boardMcpSessionId(): string {
-  return String(process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || '').trim();
+  return runtimeSessionId() || '';
 }
 
 const SERVER_NAME = 'sidequest';
@@ -73,7 +73,9 @@ const DEFAULT_PROTOCOL_VERSION = '2025-06-18';
 // Raised from 27075 for board_config.verifyEnvironment (SQ-3423): +235 bytes compacted, 67 for the key and its
 // enum plus 168 for the served description, since compactSchema strips the authored one. Measured at 24797
 // payload bytes on the W1 tree, so the 2.5KB reserve holds.
-const MCP_TOOLS_LIST_MAX_BYTES = 27300;
+// Raised from 27300 for dispatch.workProvenance (SQ-3630): measured payload 25325 bytes, all added schema structure since compactSchema strips the authored description. Keeps the 2.5KB reserve.
+// Raised from 27850 for add/update verifyKind typecheck (SQ-3644): +44 bytes of enum structure, measured 25394 payload bytes. Keeps the 2.5KB reserve.
+const MCP_TOOLS_LIST_MAX_BYTES = 27900;
 const MCP_TOOLS_LIST_HEADROOM_BYTES = 2500;
 
 function serverVersion() {
@@ -264,7 +266,7 @@ function assertMutationFreshness(projectArg: unknown) {
 
 function groomCloseArgs(tool: ToolDefinition, args: Record<string, unknown>) {
   if (tool.name !== 'groomClose' || String(args.by || '').trim()) return args;
-  const sessionId = String(process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || '').trim();
+  const sessionId = runtimeSessionId();
   return sessionId ? Object.assign({}, args, { by: sessionId }) : args;
 }
 
