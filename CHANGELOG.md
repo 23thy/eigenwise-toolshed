@@ -8,6 +8,16 @@ Releases before v3.208.0 predate this file and are not backfilled; `git log` is 
 those. Entries are generated from `.release/unreleased/*.md` by `scripts/release/cut.mjs`, so
 nothing here is hand-written.
 
+## v3.597.0 (2026-10-13)
+
+### sidequest 5.11.0 → 5.11.1
+
+#### Fixes
+
+- A SessionStart no longer retires a launch whose WorktreeCreate is still running, which failed healthy first spawns with `dispatch_binding_unavailable` and refused their retry (GH-532) (SQ-3680)
+- Keep Git failure causes in worktree sweep evidence (GH-523) (SQ-3682)
+  Worktree sweeps retain Git exit, spawn, and timeout diagnostics in status_unknown entries while keeping those trees untouched. A cross-platform regression checks the existing four-tree classification pool against 16 worktrees, including all concurrent Git children.
+
 ## v3.596.0 (2026-10-13)
 
 ### Repository
