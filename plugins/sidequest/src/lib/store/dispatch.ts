@@ -9,6 +9,7 @@ const { WHOLE_TREE_SCOPE } = require('../commit-scope.js');
 const { compositionCheckoutCommit, consumePreparedComposition, consumedAdmissionRefusal } = require('./composition-admission.js');
 import type { CompositionDispatch, CompositionTicket } from './composition-admission';
 import type { VerificationRequirement } from '../kernel/verification';
+import { authorizeWorkDeclaration, prepareWorkProvenance, workDeclaration } from './work-provenance';
 
 type NativeCheckoutCreation = CompositionDispatch & {
   sessionId?: string | null; worktreeBindingSource?: string;
@@ -122,8 +123,26 @@ function recordVerificationAmendment(ticket: any, amendment: any, previousRequir
 // board left at the default pins nothing, so its requirements stay byte-identical.
 function pinnedVerificationRequirement(ticket: any, projectPath: string, verifyEnvironment: unknown, sharedTree: boolean) {
   const requirement = preparedVerificationRequirement(ticket, projectPath);
-  const deferred = !sharedTree && verifyEnvironment === 'shared' && ['command', 'suite'].includes(requirement.kind);
+  const deferred = !sharedTree && verifyEnvironment === 'shared' && ['command', 'suite', 'typecheck'].includes(requirement.kind);
   return deferred ? Object.freeze({ ...requirement, environment: 'shared' as const }) : requirement;
+}
+
+type ProducerAttemptHistory = {
+  preparedAt?: string; terminalAt?: string; baseCommit?: string; declaredFiles?: readonly string[];
+  sanctionedCommits?: readonly string[]; verificationRequirement?: { command?: string };
+  attempts: Array<{ preparedAt?: string }>;
+};
+
+function retainedAttemptHistory(current: ProducerAttemptHistory) {
+  const attempts = structuredClone(current.attempts);
+  const terminalAttempt = attempts.find(attempt => attempt.preparedAt === current.preparedAt);
+  if (current.terminalAt && terminalAttempt) {
+    Object.assign(terminalAttempt, structuredClone({
+      baseCommit: current.baseCommit, declaredFiles: current.declaredFiles,
+      sanctionedCommits: current.sanctionedCommits, verificationRequirement: current.verificationRequirement,
+    }));
+  }
+  return attempts;
 }
 
 function createDispatch(dependencies: any) {
@@ -1944,9 +1963,13 @@ function retireUnboundDispatchOnly(slug: string, idOrRef: string, opts: Dispatch
   return Object.assign(superseded, { retired: true });
 }
 
+function investigationWithoutRepositoryWrites(ticket: { files?: unknown; description?: string }): boolean {
+  return !normalizeFiles(ticket.files).length && /\bno repository writes\b/i.test(ticket.description || '');
+}
+
 function undeclaredScopeRefusal(slug: string, ticket: StoredRecord, opts: DispatchOptions): string | null {
   const noDeclaredFileScope = unscopedWriteCannotAutoApprove(ticket, {
-    dispatchReadOnly,
+    dispatchReadOnly: (candidate: StoredRecord) => dispatchReadOnly(candidate) || investigationWithoutRepositoryWrites(candidate),
     normalizeFiles,
     autoApproveScope: boardConfig(slug)?.autoApproveScope,
   });
@@ -2239,7 +2262,7 @@ function routedRecovery(t: StoredRecord, current: StoredRecord): StoredRecord | 
 
 function priorAttemptHistory(current: StoredRecord) {
   return {
-    attempts: Array.isArray(current?.attempts) ? current.attempts.slice() : [],
+    attempts: Array.isArray(current?.attempts) ? retainedAttemptHistory(current) : [],
     supersededTokens: Array.isArray(current?.supersededTokens) ? current.supersededTokens.slice() : [],
   };
 }
@@ -2319,7 +2342,7 @@ function assertReviewCheckoutIsolation(t: StoredRecord, reviewTargetState: Store
 }
 
 function dispatchIsolation(slug: string, t: StoredRecord, current: StoredRecord, opts: DispatchOptions, effectiveFiles: readonly string[]): DispatchIsolation {
-  const readonly = dispatchReadOnly(t);
+  const readonly = dispatchReadOnly(t) || investigationWithoutRepositoryWrites(t);
   const worktreeIsolation = normalizeWorktreeIsolation(readMeta(slug)?.worktreeIsolation);
   const reviewTargetState = reviewDispatchTarget(slug, t);
   const sharedTree = initialSharedTree(reviewTargetState, worktreeIsolation, requestedSharedTree(opts, current));
@@ -2738,8 +2761,12 @@ function priorAttemptFields(plan: PreparedDispatchPlan) {
 }
 
 function preparedDispatchRecord(slug: string, t: StoredRecord, current: StoredRecord, plan: PreparedDispatchPlan, opts: DispatchOptions, preflight: DispatchPreflight) {
+  const provenance = preparationProvenanceFields(plan, opts, preflight.preparedCompatibility);
+  const workProvenance = prepareWorkProvenance(preflight.projectPath, opts.workProvenance, String(opts.sessionId || ''), ref => getTicket(slug, ref));
   return {
-    ...preparationProvenanceFields(plan, opts, preflight.preparedCompatibility),
+    ...provenance,
+    lifecycleAttempt: { ...provenance.lifecycleAttempt, workProvenance },
+    workProvenance,
     ...checkoutPlacementFields(plan, preflight, opts),
     declaredFiles: plan.artifact.declaredFiles,
     boardAddedFiles: plan.artifact.boardAddedFiles,
@@ -2846,7 +2873,14 @@ function prepareUnderDispatchLocks(slug: string, idOrRef: string, found: StoredR
   }
 }
 
-function prepareDispatch(slug?: any, idOrRef?: any, opts?: any) {
+function prepareDispatch(slug: string, idOrRef: string, opts: Record<string, unknown> = {}, grant: { allowWorkProvenance?: boolean } = {}) {
+  const current = getTicket(slug, idOrRef)?.dispatch;
+  authorizeWorkDeclaration(opts.workProvenance, opts.sessionId, grant.allowWorkProvenance === true, Boolean(current && !current.terminalAt));
+  const declaration = opts.workProvenance === undefined ? undefined : workDeclaration(opts.workProvenance);
+  return prepareDispatchRequest(slug, idOrRef, { ...opts, workProvenance: declaration });
+}
+
+function prepareDispatchRequest(slug?: any, idOrRef?: any, opts?: any) {
   opts = opts || {};
   if (opts.retireOnly === true) return retireUnboundDispatchOnly(slug, idOrRef, opts);
   const { projectPath, found } = dispatchableTicket(slug, idOrRef, opts);
@@ -4095,7 +4129,7 @@ function dispatchDelta(slug?: any, ticket?: any) {
       }).trim().split(/\r?\n/).filter(Boolean);
     }
     const committed = commits.length ? commitScope.rangePaths(workspace.root, commits) : [];
-    return { ok: true, workspace, ...workingState, committed };
+    return { ok: true, workspace, ...workingState, committed, commitCount: commits.length };
   } catch (error: any) {
     return { ok: false, reason: 'git_error', message: error?.message || String(error) };
   }

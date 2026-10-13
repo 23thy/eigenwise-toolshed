@@ -13,6 +13,7 @@ const { isInScope, scopedPaths } = require('../scope-match');
 const { manualCandidateDeliveryGuidance, candidateReviewRequiredGuidance, applyDeliveryContentCommitGuidance, landedWithoutSubmissionGuidance } = require('../refusal-guidance.js');
 const worktrees = require('../worktrees.js');
 const { exactCompositionSubmissionRefusal, compositionCaptureRefusal } = require('./composition-admission.js');
+const { stillSpawnsInsideItsWrite } = require('../db');
 import type { VerificationResult } from '../kernel/verification.js';
 import type { CandidateInvalidation } from '../kernel/wave.js';
 import type { CompositionTicket } from './composition-admission.js';
@@ -1313,6 +1314,72 @@ function postMergeVerificationFailure(slug: any, ticket: any, verify: any, repo:
   }
 }
 
+// SQ-3426: a candidate on the environment lane never ran its verifier before submit, so the first lane
+// failure is the first anyone saw of it. The rolled-back run goes back to the ticket once, through the
+// ordinary rework record (source 'environment-lane'; its copied integration carries the pinned commit,
+// the rolled-back head and the log). A second lane failure parks for a decision, and a reviewed
+// candidate always parks: nothing here outranks a bound review.
+const LANE_BOUNCED_FAILURES = /^(?:verification_[a-z_]+_post_merge|merge_failed)$/;
+
+function laneFailureTicket(slug: any, failure: any) {
+  if (!LANE_BOUNCED_FAILURES.test(String(failure.reason))) return null;
+  const ticket = failure.ticket;
+  const onLane = pinnedVerificationRequirement(ticket).environment === 'shared';
+  return onLane && !candidateReviewRelation(slug, ticket) ? ticket : null;
+}
+
+function laneRejection(ticket: any) {
+  return rejectionHistory(ticket).find((entry: any) => entry.source === 'environment-lane') || null;
+}
+
+function laneLogPath(integration: any) {
+  return integration?.verify?.logPath || 'no log (the merge conflicted before the verifier ran)';
+}
+
+function laneFailureEvidence(failure: any) {
+  if (failure.verify) return { comment: verificationFailureComment(failure.verify), reason: failure.message };
+  const integration = failure.ticket.submission.integration;
+  const conflict = `Merge --no-ff of ${integration.pinnedCommit} onto ${integration.targetBranch} at ${failure.before} conflicted in ${failure.conflictedPaths.join(', ') || 'unreported paths'}.`;
+  return { comment: conflict, reason: `${conflict} Rebase the candidate onto the current ${integration.targetBranch}, resolve the conflict in the candidate, and resubmit.` };
+}
+
+function parkSecondLaneFailure(slug: any, failure: any, prior: any) {
+  const ticket = failure.ticket;
+  const message = `${ticket.ref} failed its environment lane run twice, so it stays parked for a decision instead of a second automatic rework. First failure, candidate ${prior.commit}: ${laneLogPath(prior.integration)}. Second failure, candidate ${ticket.submission.commit}: ${laneLogPath(ticket.submission.integration)}.`;
+  updateSubmissionIntegration(slug, ticket.id, { reason: 'environment_lane_second_failure', message });
+  return { ...failure, ticket: getTicket(slug, ticket.id), reason: 'environment_lane_second_failure', message };
+}
+
+function reworkLaneFailure(slug: any, failure: any) {
+  const ticket = failure.ticket;
+  const evidence = laneFailureEvidence(failure);
+  addComment(slug, ticket.id, { by: 'orchestrator', source: 'integration', body: evidence.comment });
+  // The same listed write the store's rework export runs as: it still preserves the quarantine ref inside
+  // its ticket transaction (SQ-3499 follow-up), and this call is that write with the lane's evidence.
+  const rework = stillSpawnsInsideItsWrite('reworkSubmission', () => reworkSubmission(slug, ticket.id, {
+    by: ticket.submission.by,
+    review: evidence.comment.slice(0, REJECTION_REVIEW_MAX),
+    reason: evidence.reason.slice(0, REJECTION_REASON_MAX),
+    source: 'environment-lane',
+  }));
+  if (!rework.ok) return { ...failure, rework, message: `${failure.message} Rework refused: ${rework.message || rework.reason}.` };
+  return {
+    ...failure,
+    ticket: rework.ticket,
+    reason: 'environment_lane_reworked',
+    rework: rework.rejected,
+    message: `${evidence.reason} ${ticket.ref} returned to todo for rework with this evidence in its briefing; dispatch it again. The candidate is preserved at ${rework.rejected.quarantineRef}.`,
+  };
+}
+
+function bounceFailedLaneRun(slug: any, failure: any) {
+  const ticket = laneFailureTicket(slug, failure);
+  if (!ticket) return failure;
+  const prior = laneRejection(ticket);
+  if (prior) return parkSecondLaneFailure(slug, failure, prior);
+  return reworkLaneFailure(slug, failure);
+}
+
 function submissionUsesGit(ticket?: any) {
   return !isArtifactSubmission(ticket?.submission);
 }
@@ -2188,7 +2255,7 @@ function integrateUnderDeliveryLease(slug: string, idOrRef: string, opts: { inte
   const lockLease = acquireLock(lock, { wait: false, holder });
   if (!lockLease) return deliveryInProgress(ticket, lock);
   try {
-    return deliverUnderCompositionLocks(slug, ticket, () => integrateSubmissionUnlocked(slug, idOrRef, { ...opts, verifyLogPath: holder.logPath }));
+    return deliverUnderCompositionLocks(slug, ticket, () => bounceFailedLaneRun(slug, integrateSubmissionUnlocked(slug, idOrRef, { ...opts, verifyLogPath: holder.logPath })));
   } finally {
     lockLease.refresh();
     releaseLock(lock, lockLease);

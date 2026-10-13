@@ -3,8 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createAnalyzer, baseFunctionByIdentity, changedMetricsAgainstBase as changedMetrics, functionCoverage, readCoverage, remapRecords, originalOffsetMapper } from '../../plugins/quality-gate/lib/core.mjs';
-import { crapScore, formatMetric, measureSource, readOutput } from '../../plugins/quality-gate/lib/measure.mjs';
+import { createAnalyzer, baseFunctionByIdentity, changedMetricsAgainstBase as changedMetrics, functionCoverage, readCoverage, remapRecords, originalOffsetMapper, LEGACY_UNCHANGED } from '../../plugins/quality-gate/lib/core.mjs';
+import { crapScore, formatMetric, gateVerdict, measureSource, readOutput, THRESHOLD } from '../../plugins/quality-gate/lib/measure.mjs';
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, '..', '..');
 const sidequestRoot = path.join(repositoryRoot, 'plugins', 'sidequest');
@@ -12,7 +12,6 @@ const { collectFunctions, cyclomaticComplexity, ownText, parserTransport } = awa
 export { collectFunctions, cyclomaticComplexity, ownText, parserTransport, functionCoverage, readCoverage, remapRecords, originalOffsetMapper, baseFunctionByIdentity };
 const SOURCE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts']);
 const UNANALYZED_SOURCE_EXTENSIONS = new Set(['.cs', '.py', '.sh', '.ps1', '.svelte', '.tsx', '.jsx']);
-const THRESHOLD = 6;
 const SIDEQUEST_BUILD_OUTPUT_DIRECTORIES = new Set(['bin', 'hooks', 'lib']);
 
 function parseArguments(argumentsList) {
@@ -60,7 +59,7 @@ export async function sourceMetrics(sourcePath, coverageScripts) {
 function runGit(argumentsList, cwd = repositoryRoot) {
   const result = spawnSync('git', argumentsList, { cwd, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr.trim() || `git ${argumentsList.join(' ')} failed`);
-  return result.stdout.trim();
+  return argumentsList[0] === 'show' ? result.stdout : result.stdout.trim();
 }
 
 function integrationBranch() {
@@ -89,8 +88,7 @@ export async function changedMetricsAgainstBase(metrics, changedPaths, base, rea
 }
 
 export async function compareAgainstBase(metrics, changedPaths, base, readBaseline = baselineFunctions) {
-  const changedMetrics = await changedMetricsAgainstBase(metrics, changedPaths, base, readBaseline);
-  return changedMetrics.filter((metric) => !metric.unverified && metric.crap >= THRESHOLD).map(formatMetric);
+  return gateVerdict(await changedMetricsAgainstBase(metrics, changedPaths, base, readBaseline)).failures;
 }
 
 function formatUnverifiedMetric(metric) {
@@ -155,8 +153,9 @@ export async function selectSuites(changedPaths) {
 // node --test refuses to run files while NODE_TEST_CONTEXT says it is already inside a test, so
 // a gate started from a test (its own CLI fixture) must not hand that marker to the suites.
 function spawnSuite(suite, coverageDirectory) {
-  const { NODE_TEST_CONTEXT, ...environment } = process.env;
-  return spawnSync(suite.command, suite.args, { cwd: suite.cwd, env: { ...environment, NODE_V8_COVERAGE: coverageDirectory }, stdio: 'inherit', shell: process.platform === 'win32' });
+  const { NODE_TEST_CONTEXT, NODE_V8_COVERAGE, ...environment } = process.env;
+  const preload = new URL('../../plugins/quality-gate/lib/core.mjs', import.meta.url).href;
+  return spawnSync(suite.command, suite.args, { cwd: suite.cwd, env: { ...environment, QUALITY_GATE_V8_CAPTURE: coverageDirectory, NODE_OPTIONS: `${environment.NODE_OPTIONS || ''} --import=${preload}` }, stdio: 'inherit', shell: process.platform === 'win32' });
 }
 
 async function runSuites(suites, runSuite) {
@@ -189,31 +188,52 @@ async function measureMetrics(changedPaths, coverageDirectory) {
   return (await Promise.all(changedPaths.map((changedPath) => sourceMetrics(path.join(repositoryRoot, changedPath), coverageScripts)))).flat();
 }
 
+const UNCLASSIFIED = 'unclassified';
+const CLASS_SECTIONS = [
+  ['new', `NEW: not at base, must score below ${THRESHOLD}`],
+  ['modified-raised', `MODIFIED-RAISED: complexity rose since base, must score below ${THRESHOLD}`],
+  [LEGACY_UNCHANGED, 'LEGACY-UNCHANGED: physically modified with equal or lower complexity, must score below 6'],
+  [UNCLASSIFIED, 'UNCLASSIFIED: no base comparison (another language, or an unchanged function under --all)'],
+];
+const ENFORCEMENT_RULE = `every new or physically modified owned body must score strictly below ${THRESHOLD}; classifications never exempt changed bodies`;
+
 function metricStatus(metric) {
   if (metric.unverified) return 'UNVERIFIED';
   return metric.crap >= THRESHOLD ? 'FAIL' : 'PASS';
 }
 
+function metricRow(metric) {
+  return `${metricStatus(metric)} ${metric.unverified ? formatUnverifiedMetric(metric) : formatMetric(metric)}\n`;
+}
+
 function writeMetricRows(metrics) {
   metrics.sort((left, right) => left.relativePath.localeCompare(right.relativePath) || left.line - right.line);
-  for (const metric of metrics) process.stdout.write(`${metricStatus(metric)} ${metric.unverified ? formatUnverifiedMetric(metric) : formatMetric(metric)}\n`);
+  const byClass = Map.groupBy(metrics, (metric) => metric.classification ?? UNCLASSIFIED);
+  for (const [classification, heading] of CLASS_SECTIONS) {
+    const rows = byClass.get(classification) ?? [];
+    if (rows.length) process.stdout.write(`${heading} (${rows.length})\n${rows.map(metricRow).join('')}`);
+  }
+}
+
+function classCounts(changedMetrics) {
+  const byClass = Map.groupBy(changedMetrics, (metric) => metric.classification);
+  return CLASS_SECTIONS.slice(0, 3).map(([classification]) => `${byClass.get(classification)?.length ?? 0} ${classification}`).join(', ');
 }
 
 function writeGateResult({ base, changedMetrics, failures, unverified, suiteSummary }) {
+  const counts = changedMetrics.length ? classCounts(changedMetrics) : 'no changed or new functions were scored';
   if (failures.length || unverified.length) {
     const errors = [...failures, ...unverified.map(formatUnverifiedMetric)];
-    process.stderr.write(`CRAP gate failed against ${base} (coverage suites: ${suiteSummary}):\n${errors.map((failure) => `- ${failure}`).join('\n')}\n`);
+    process.stderr.write(`CRAP gate failed against ${base} (coverage suites: ${suiteSummary}): ${counts}; ${ENFORCEMENT_RULE}:\n${errors.map((failure) => `- ${failure}`).join('\n')}\n`);
     process.exitCode = 1;
     return;
   }
-  const summary = changedMetrics.length ? `${changedMetrics.length} changed or new functions scored below ${THRESHOLD}.` : 'no changed or new functions were scored.';
-  process.stdout.write(`CRAP gate passed against ${base} (coverage suites: ${suiteSummary}): ${summary}\n`);
+  process.stdout.write(`CRAP gate passed against ${base} (coverage suites: ${suiteSummary}): ${counts}; ${ENFORCEMENT_RULE}.\n`);
 }
 
 export async function reportMetrics({ allChangedPaths, base, baseWasExplicit, changedEntries, changedPaths, metrics, options, suiteSummary, unanalyzed = [] }) {
   const changedMetrics = [...await changedMetricsAgainstBase(metrics, changedEntries, base), ...unanalyzed];
-  const unverified = changedMetrics.filter((metric) => metric.unverified);
-  const failures = changedMetrics.filter((metric) => !metric.unverified && metric.crap >= THRESHOLD).map(formatMetric);
+  const { failures, unverified } = gateVerdict(changedMetrics);
   writeMetricRows(options.all ? [...metrics, ...unanalyzed] : changedMetrics);
   const warning = emptyChangedFunctionWarning({
     changedMetrics,
