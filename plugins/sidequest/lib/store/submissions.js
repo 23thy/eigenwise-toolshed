@@ -2533,7 +2533,7 @@ ${verify.outputTail}` : null
         worktree,
         admittedScope,
         ...pinnedBaseline ? { baseline: pinnedBaseline } : {},
-        ...t.dispatch?.workProvenance ? { workProvenance: t.dispatch.workProvenance } : {},
+        workProvenance: t.dispatch?.workProvenance,
         unscopedPaths: gatedPaths,
         ...rejectedSubmission ? { supersedesRejectedSubmission: rejectedSubmission.commit } : {},
         ...inheritedPaths.length ? { inheritedPaths } : {},
