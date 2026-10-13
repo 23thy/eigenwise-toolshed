@@ -170,14 +170,62 @@ test('the pending rework section names no actor and claims a preserved ref only 
   assert.match(sourceRevision, /Rejected candidate: rev-77$/m);
 });
 
-test('executor briefings tell the agent how to report an unavailable Board MCP server', () => {
+test('first dispatch keeps task sections and points at executor lifecycle rules', () => {
   const briefing = agentsync.renderTicketBriefing({
     ref: 'SQ-CLI-FALLBACK', model: 'sonnet', effort: 'medium', dispatchExecutor: 'sidequest-exec-medium', category: {},
   }, 'cli-fallback-token');
-  assert.match(briefing, /Board MCP is the executor lifecycle authority/);
-  assert.match(briefing, /stop and report it to the user instead of retrying/);
-  assert.match(briefing, /The user must run \/mcp and reconnect plugin:sidequest:board, or restart Claude Code/);
+  assert.match(briefing, /Lifecycle reference: .*_exec-template\.md/);
+  assert.match(briefing, /Verification reference: .*verify-discipline.*SKILL\.md/);
+  assert.doesNotMatch(briefing, /## Resume/);
+  assert.ok(briefing.indexOf('## Dispatch, claim') < briefing.indexOf('## This ticket'));
+  assert.match(briefing, /## Story execution contract/);
+  assert.match(briefing, /Declared files:/);
   assert.doesNotMatch(briefing, /reload or reconnect Sidequest|version-pinned CLI fallback/);
+});
+
+test('resume packet leads with the retained candidate and recorded verification facts', () => {
+  const { execFileSync } = require('node:child_process');
+  const kernel = require('../lib/kernel/worktree.js');
+  const repository = tmpDir();
+  const retained = path.join(repository, 'retained');
+  execFileSync('git', ['init', '--quiet', '-b', 'main'], { cwd: repository });
+  execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=test@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'checkpoint'], { cwd: repository });
+  execFileSync('git', ['worktree', 'add', '--detach', retained, 'HEAD'], { cwd: repository, stdio: 'pipe' });
+  const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: retained, encoding: 'utf8' }).trim();
+  const gitDirectory = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: retained, encoding: 'utf8' }).trim();
+  const commonGitDirectory = path.join(repository, '.git');
+  const checkoutInstance = kernel.createCheckoutInstanceMarker(gitDirectory);
+  const lease = {
+    repository, gitDirectory, commonGitDirectory, observedWorktree: retained, observedRevision: commit,
+    boundWorktree: retained, boundRevision: commit, boundGitDirectory: gitDirectory,
+    boundCommonGitDirectory: commonGitDirectory, boundCheckoutInstance: checkoutInstance,
+    identity: { status: 'bound', agentId: 'resume-fixture' }, liveness: { status: 'terminal' }, phase: 'terminal', provisioning: 'host',
+  };
+  const continuation = {
+    mode: 'retained_worktree_resume', sourceWorktree: retained, commit, lease,
+    releaseReason: 'Verification remains pending.', verification: { status: 'failed_suite', logPath: path.join(repository, 'verify.log') },
+  };
+  try {
+    const briefing = agentsync.renderTicketBriefing({
+      ref: 'SQ-RESUME', title: 'Resume fixture', description: 'Keep this description unchanged.', category: {},
+      executorVerify: 'node --version', dispatch: { continuation, verificationRequirement: { kind: 'command', command: 'node --version', evidenceContract: 'node --version' } },
+    }, 'resume-token');
+    assert.ok(briefing.indexOf('## Resume') >= 0);
+    assert.ok(briefing.indexOf('## Resume') < briefing.indexOf('## Dispatch, claim'));
+    assert.ok(briefing.includes('Checkpoint commit: ' + commit));
+    assert.ok(briefing.includes('retained worktree ' + retained));
+    assert.match(briefing, /Last verification result: failed_suite/);
+    assert.ok(briefing.includes('Verification log: ' + continuation.verification.logPath));
+    assert.match(briefing, /Handback reason: Verification remains pending\./);
+    assert.match(briefing, /first run the pinned verifier/);
+    assert.match(briefing, /Do not re-read the full thread/);
+    assert.match(briefing, /Description:\nKeep this description unchanged\./);
+    assert.match(briefing, /Pinned verifier: command\. Command: node --version/);
+    assert.equal(briefing.split('## Resume').length, 2);
+  } finally {
+    execFileSync('git', ['worktree', 'remove', retained], { cwd: repository });
+    fs.rmSync(repository, { recursive: true, force: true });
+  }
 });
 
 test('executor briefings preserve orchestrator-owned improvement decisions', () => {
@@ -224,11 +272,14 @@ test('executor briefings surface Sidequest defects instead of project workaround
   const briefing = agentsync.renderTicketBriefing({
     ref: 'SQ-UPSTREAM-DEFECT', model: 'sonnet', effort: 'medium', dispatchExecutor: 'sidequest-exec-medium', category: {},
   }, 'upstream-defect-token');
-  assert.match(briefing, /refusal that contradicts observed state, a dead retrieval handle, a guard loop, or a reproducible tool error/);
-  assert.match(briefing, /report it to the user with the reproducing evidence and treat it as an upstream defect/);
-  assert.match(briefing, /put that evidence in a ticket comment so the orchestrator sees it/);
-  assert.match(briefing, /Do not encode a workaround in project rules, hooks, or memory/);
-  assert.match(briefing, /marked temporary and name the defect it awaits/);
+  assert.match(briefing, /Lifecycle reference: .*upstream-defect reporting/);
+  const template = fs.readFileSync(path.join(__dirname, '..', 'scripts', '_exec-template.md'), 'utf8');
+  assert.match(template, /Board transport/);
+  assert.match(template, /technical_blocker/);
+  assert.match(template, /Upstream defects/);
+  assert.match(template, /Do not encode a workaround in project rules, hooks, or memory/);
+  const references = briefing.match(/(?:Lifecycle|Verification) reference: .*/g).join('\n');
+  assert.ok(Buffer.byteLength(references) < 800, 'reference pointers replace over 1,200 bytes of repeated lifecycle prose');
 });
 
 test('a bound review briefing sends a confirmed defect to the oracle, never to a rejection route', () => {

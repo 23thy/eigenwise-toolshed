@@ -357,6 +357,14 @@ function retainedWorktreeAccess(worktree) {
     `Run git there as \`git -C ${worktree} <command>\`, and give Edit and Write absolute paths under it. Your own working directory stays the shared checkout, where mutating git is refused by design.`
   ];
 }
+function resumedCheckpointEvidence(continuation) {
+  const { status = "not recorded", logPath = "not recorded" } = continuation.verification || {};
+  return [
+    "Last verification result: " + status,
+    "Verification log: " + (logPath || "not recorded"),
+    "Handback reason: " + (continuation.releaseReason || "not recorded")
+  ];
+}
 function ticketContinuationPacket(ticket) {
   const continuation = ticket?.dispatch?.continuation;
   if (continuation?.mode === "live_claim_resume" && continuation.sourceWorktree && continuation.commit) {
@@ -372,14 +380,15 @@ function ticketContinuationPacket(ticket) {
   if (continuation?.mode === "retained_worktree_resume" && continuation.sourceWorktree && continuation.commit && resume.allowed) {
     const branch = continuation.sourceBranch || "(detached HEAD)";
     return [
-      "Continuation handoff:",
+      "## Resume",
       `The previous executor released this same ticket from retained worktree ${continuation.sourceWorktree}.`,
       `Previous branch: ${branch}`,
       `Checkpoint commit: ${continuation.commit}`,
+      ...resumedCheckpointEvidence(continuation),
       ...retainedWorktreeAccess(continuation.sourceWorktree),
       `Before any other work, verify \`git -C ${continuation.sourceWorktree} rev-parse HEAD\` equals \`${continuation.commit}\` and continue from that checkpoint.`,
       "The board binds this ticket to the retained worktree at claim time, so that tree is the only place your writes are authorized.",
-      "Do not cherry-pick the checkpoint or rediscover the checkpointed work."
+      "After claiming and confirming the retained HEAD, first run the pinned verifier on this clean retained candidate, unless it is environment-bound. Then continue from that state. Do not re-read the full thread, cherry-pick the checkpoint, or rediscover the checkpointed work. Historical verification is evidence, not a fresh capture for this dispatch."
     ].join("\n");
   }
   if (continuation?.mode === "dirty_worktree_resume" && continuation.sourceWorktree && continuation.commit && resume.allowed) {
@@ -701,8 +710,8 @@ function executorSafetyBody(ticket, nonce, tokenFile, project, executor, closeou
     executorVerificationDirectoryGuidance(ticket.executorVerifyCwd),
     requirement.environment === "shared" ? "Pinned verifier is environment-bound: do not run it here. After you submit, the orchestrator's lane runs it in the shared checkout against your merged commit. A failure comes back as Pending rework with the log." : verifierCommand ? "Run it through " + capturedVerifyCommand(verifierCommand, ticket?.ref, project, dispatchBoundWorktree(ticket)) + " in the FOREGROUND with an explicit generous timeout of up to 600000 ms; this is the pinned verifier. Run it only over a clean worktree: a successful wrapper run records its completed capture identity against this ticket and the checked Git revision, and submit refuses prose or a retyped command without that matching record. A backgrounded verify's completion does not wake you, so going idle on it parks the claim indefinitely. If it genuinely exceeds the 10-minute Bash ceiling, use bounded foreground until-loops instead of backgrounding or going idle; post [sidequest:verify-start] before it only for an expected no-op, and always post [sidequest:verify-complete] with status first after it exits. When the pinned verifier needs paths outside declared scope, call scopeRequest with those paths and wait; do not release a verified candidate instead. Executors may report evidence only; they cannot replace, skip, or weaken this verifier." : "Record evidence for the pinned verifier. Executors may not replace, skip, or weaken it; skipping requires an authorized bounded waiver recorded as a Diagnostic.",
     evidenceGuidance,
-    "Execution survival: Budget tool calls and preserve progress early. If the budget nears exhaustion before completing the ticket contract, use the existing Continuation checkpoint path: make a scoped checkpoint commit, write a `Continuation checkpoint` comment with the exact remaining work and verification status, release the ticket to `todo`, and end for a fresh continuation dispatch. Do not submit incomplete ticket work as ready. Never leave verified work uncommitted. Board MCP is the executor lifecycle authority. If the Board MCP server is unavailable, stop and report it to the user instead of retrying. The user must run /mcp and reconnect plugin:sidequest:board, or restart Claude Code. Do not use the Sidequest CLI or raw Agent as a fallback.",
-    "If Sidequest itself misbehaves, such as a refusal that contradicts observed state, a dead retrieval handle, a guard loop, or a reproducible tool error, report it to the user with the reproducing evidence and treat it as an upstream defect. Executors also put that evidence in a ticket comment so the orchestrator sees it. Do not encode a workaround in project rules, hooks, or memory; any unavoidable stopgap must be marked temporary and name the defect it awaits.",
+    `Lifecycle reference: ${TEMPLATE_PATH} (Execution survival, board transport, and upstream-defect reporting). Follow the lifecycle rules already loaded in your executor definition.`,
+    `Verification reference: ${path.join(__dirname, "..", "skills", "verify-discipline", "SKILL.md")}.`,
     highStakes,
     boundReview,
     closeout,
@@ -836,7 +845,7 @@ function taskAndScopeBody(ticket, slug) {
   const declared = Array.isArray(ticket?.files) ? ticket.files : [];
   const declaredFiles = declared.length ? declared.map((file) => `- ${file}`).join("\n") : noDeclaredFilesText(ticket);
   const scopedFiles = declaredFiles + scopeAddedBeyondDeclared(ticket, slug, declared);
-  return executorTaskBody(ticket, ticket?.category || {}, scopedFiles, dispatchUncertaintyPacket(ticket, slug), planDocumentPacket(ticket, slug), experimentLogPacket(ticket, slug), findingCheckpointPacket(ticket), ticketContinuationPacket(ticket));
+  return executorTaskBody(ticket, ticket?.category || {}, scopedFiles, dispatchUncertaintyPacket(ticket, slug), planDocumentPacket(ticket, slug), experimentLogPacket(ticket, slug), findingCheckpointPacket(ticket));
 }
 function executorHandlesBody(ticket, slug) {
   const links = Array.isArray(ticket.links) && ticket.links.length ? ticket.links.map((link) => `- ${link.type || "related"}: ${link.ref || "(unknown ticket)"}${linkedPlanSuffix(link, slug)}`).join("\n") : "(No ticket dependencies were recorded.)";
@@ -891,6 +900,7 @@ This dispatch deliberately runs in the shared checkout. Write only within the de
     profile: { id: "executor-briefing" },
     revision: Number(ticket?.dispatch?.launchSeq) || 1,
     items: [
+      { id: "resume", kind: "evidence", priority: 650, order: 0, body: continuation },
       { id: "safety", kind: "safety", priority: 600, order: 1, body: executorSafetyBody(ticket, nonce, ticket?.dispatch?.tokenFile, project, executor, closeout, worktreeIdentity, readOnlyScratchSpace, worktreeSync) + artifactSafety },
       { id: "execution-contract", kind: "contract", priority: 500, order: 2, body: storyContractProjectionBody(snapshot) },
       ...storyLog ? [{ id: "story-decision-log", kind: "evidence", priority: 475, order: 3, body: storyDecisionLogProjectionBody(storyLog) }] : [],

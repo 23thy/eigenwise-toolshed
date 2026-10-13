@@ -1272,6 +1272,12 @@ function createDispatch(dependencies) {
     if (!ownership.ownHead) return continuationFallback("retained_worktree_head_is_not_this_tickets", range.worktree, { commit: range.commit, commits: range.commits });
     return null;
   }
+  function lastReleasedVerification(ticket, commit) {
+    return ticket.verificationCaptures?.slice().reverse().find((capture) => capture.candidate.source === "git" && capture.candidate.value === commit) ?? null;
+  }
+  function releasedCheckpointEvidence(ticket, attempt, commit) {
+    return { releaseReason: attempt?.release?.reason ?? null, verification: lastReleasedVerification(ticket, commit) };
+  }
   function retainedWorktreeContinuationState(slug, ticket, state) {
     const attempts = Array.isArray(state?.attempts) ? state.attempts : [];
     const attempt = attempts[attempts.length - 1] || null;
@@ -1368,6 +1374,7 @@ function createDispatch(dependencies) {
           clean: true,
           releasedAt: state.terminalAt,
           releaseKind: attempt?.release?.kind || (checkpointCommit ? "checkpoint" : "handback"),
+          ...releasedCheckpointEvidence(ticket, attempt, observedRevision),
           lease: leaseFacts
         }
       };
