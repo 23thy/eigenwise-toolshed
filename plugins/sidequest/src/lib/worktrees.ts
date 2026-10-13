@@ -984,6 +984,7 @@ type WorktreeSweepFacts = {
   clean: boolean;
   statusKnown: boolean;
   statusTimedOut: boolean;
+  statusFailure: string | null;
   trackedChanges: boolean;
   untrackedOrIgnored: boolean;
   ahead: number | null;
@@ -1021,11 +1022,17 @@ async function inspectWorktree(entry: { worktree: string; statusTimeoutMs?: numb
   return worktreeSweepFacts(cleanResult, statusEntries, measures, minAgeMs, notIntegratedSalvageAgeMs);
 }
 
+function gitStatusFailure(result: GitResult): string | null {
+  if (result.ok) return null;
+  return `git status failed (exit ${result.status}): ${result.stderr}`;
+}
+
 function worktreeSweepFacts(cleanResult: GitResult, statusEntries: readonly WorktreeStatusEntry[], { ageMs, patch, reachable }: WorktreeMeasures, minAgeMs: number, notIntegratedSalvageAgeMs: number): WorktreeSweepFacts {
   return {
     clean: cleanResult.ok && statusEntries.length === 0,
     statusKnown: cleanResult.ok,
     statusTimedOut: Boolean(cleanResult.timedOut),
+    statusFailure: gitStatusFailure(cleanResult),
     trackedChanges: statusEntries.some((status) => !UNVERSIONED_STATUS_CODES.has(status.code)),
     untrackedOrIgnored: statusEntries.some((status) => UNVERSIONED_STATUS_CODES.has(status.code)),
     ahead: patch.ahead,
@@ -1134,6 +1141,7 @@ function classifiedWorktreeEntry(entry: ClassifiedWorktreeEntry, ticket: Classif
     head: entry.head || null,
     ticket: ticket ? ticket.ref : null,
     ...factsForEntry(facts),
+    detail: reason === 'status_unknown' ? facts.statusFailure : undefined,
     locked: null,
     action,
     reason,
