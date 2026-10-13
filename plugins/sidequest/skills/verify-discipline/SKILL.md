@@ -16,7 +16,9 @@ description: >-
    runnable regression, not an invented test count.
 4. Commit the final scoped candidate, then run the ticket's exact verifier once for the final
    clean-candidate capture and report the behavior and assertion or consumer it exercised. A changed
-   candidate needs fresh verification. Do not claim broader coverage ran when it did not.
+   candidate needs fresh verification. Submit resolves the dispatch-pinned command automatically, so omit
+   verify for command verifiers instead of retyping it. Manual and attestation contracts still need evidence.
+   Do not claim broader coverage ran when it did not.
 
 The orchestrator delivers the wave through the real pinned delivery verifier, then runs one combined
 full gate after integration and before versioning. Re-gate a changed tree after rebase. Reuse

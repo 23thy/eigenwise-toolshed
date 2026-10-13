@@ -7008,3 +7008,68 @@ test('SQ-3424: manual and document verifiers still require evidence and never re
   assert.strictEqual(documentGiven.ok, true, documentGiven.message);
   assert.strictEqual(documentGiven.ticket.submission.verificationResult.status, 'passed');
 });
+
+for (const suppliedVerify of [undefined, 'test/wrong-path.test.ts']) {
+  test(`command submit resolves the dispatch-pinned verifier when verify is ${suppliedVerify === undefined ? 'omitted' : 'mismatched'}`, async () => {
+    cleanBranch();
+    const command = 'node -e "process.exit(0)"';
+    const ticket = addTicket('automatic pinned command', { category: 'submission.fixture', executorVerifyKind: 'command', executorVerify: command, files: ['README.md'] });
+    const by = 'automatic-verifier-worker';
+    const sessionId = 'automatic-verifier-session';
+    const prepared = store.prepareDispatch(slug, ticket.ref, { sessionId, sharedTree: true });
+    assert.strictEqual(prepared.ticket.dispatch.verificationRequirement.command, command);
+    assert.strictEqual(store.claimTicket(slug, ticket.ref, by, { token: prepared.token, executor: prepared.ticket.dispatchExecutor, sessionId }).ok, true);
+    const commit = git(['rev-parse', 'HEAD']);
+    pin(ticket, commit);
+    const capture = await runVerifyCapture(command, PROJECT_DIR);
+    try {
+      assert.strictEqual(capture.status, 'passed');
+      assert.strictEqual(recordCapture({ project: PROJECT_DIR, ticket: ticket.ref }, capture, PROJECT_DIR).ok, true);
+      const accepted = await callMcp('submit', { project: PROJECT_DIR, ref: ticket.ref, by, commit, base: commit, worktree: PROJECT_DIR, verify: suppliedVerify, body: 'Pinned capture verifies this unchanged candidate.' });
+      assert.strictEqual(accepted.ok, true, accepted.message);
+      const submission = store.getTicket(slug, ticket.ref).submission;
+      assert.strictEqual(submission.verify, command, 'submission stores the dispatch-pinned command');
+      assert.strictEqual(submission.verificationResult.verifierSource, 'pinned');
+    } finally {
+      fs.rmSync(capture.logPath, { force: true });
+    }
+  });
+}
+
+test('MCP release accepts typed refusal evidence and still refuses bare prose', async () => {
+  const ticket = addTicket('typed release refusal');
+  const by = 'typed-release-worker';
+  assert.strictEqual(store.claimTicket(slug, ticket.ref, by, { direct: true, reason: 'This release fixture needs a local direct claim.' }).ok, true);
+  const args = { project: PROJECT_DIR, ref: ticket.ref, by, reason: 'The MCP tool refused the operation.', kind: 'technical_blocker', status: 'todo' };
+  const bare = await callMcp('release', args);
+  assert.strictEqual(bare.reason, 'technical_blocker_evidence_required');
+  assert.strictEqual(store.getTicket(slug, ticket.ref).claim.by, by, 'bare prose keeps the claim');
+  const incomplete = await callMcp('release', { ...args, mcpRefusal: { tool: 'scopeRequest', message: 'Outside the declared files.' } });
+  assert.strictEqual(incomplete.reason, 'technical_blocker_evidence_required');
+  const mcpRefusal = { tool: 'scopeRequest', reason: 'scope_refused', message: 'Outside the declared files.' };
+  const accepted = await callMcp('release', { ...args, mcpRefusal });
+  assert.strictEqual(accepted.ok, true, accepted.message);
+  const released = store.getTicket(slug, ticket.ref);
+  assert.strictEqual(released.claim, null);
+  assert.deepStrictEqual(released.release.evidence.mcpRefusal, mcpRefusal);
+});
+
+test('hook refusal evidence must name the current MCP session', async () => {
+  const ticket = addTicket('same-session hook release');
+  const by = 'hook-release-worker';
+  assert.strictEqual(store.claimTicket(slug, ticket.ref, by, { direct: true, reason: 'This hook release fixture needs a local direct claim.' }).ok, true);
+  const session = require('../lib/mcp-shared.js').runtimeSessionId() || 'hook-release-session';
+  const args = { project: PROJECT_DIR, ref: ticket.ref, by, session, reason: 'The hook refused this operation.', kind: 'technical_blocker', status: 'todo' };
+  const rejected = await callMcp('release', { ...args, hookRefusal: { session: 'another-session', text: 'PreToolUse denied the operation.' } });
+  assert.strictEqual(rejected.reason, 'technical_blocker_evidence_required');
+  const hookRefusal = { session, text: 'PreToolUse denied the operation.' };
+  const accepted = await callMcp('release', { ...args, hookRefusal });
+  assert.strictEqual(accepted.ok, true, accepted.message);
+  assert.deepStrictEqual(store.getTicket(slug, ticket.ref).release.evidence.hookRefusal, hookRefusal);
+});
+
+test('command verification refuses an absent pinned command', () => {
+  const { commandVerificationResult } = require('../lib/kernel/verification.js');
+  const refused = commandVerificationResult({ kind: 'command', evidenceContract: '' }, 'node -e "process.exit(0)"', [], 'SQ-fixture', { source: 'git', value: COMMIT }, 'attempt');
+  assert.strictEqual(refused.diagnostic.code, 'executor_verify_required');
+});
