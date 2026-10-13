@@ -3320,13 +3320,13 @@ test('MCP submit reports every independently fixable completion refusal together
   assert.equal(refused.reason, 'negative_control_required');
   assert.deepEqual(refused.failures.map((failure: any) => failure.code), [
     'negative_control_required',
-    'executor_verify_mismatch',
+    'verification_capture_required',
     'missing_release_fragment',
   ]);
   const refusalMessages = refused.failures.map((failure: any) => failure.message).join('\n');
   assert.match(refusalMessages, /Write the fragment, then commit it, then submit again\./);
   assert.match(refusalMessages, /needs a claim-holder negative control/);
-  assert.match(refusalMessages, /must match the declared executor verify command/);
+  assert.match(refusalMessages, /No completed passed verification capture exists/);
 });
 
 test('MCP add reports every verify-command defect together', async () => {

@@ -2765,6 +2765,7 @@ function deferredVerification(requirement: any) {
   return {
     kind: requirement.kind,
     status: 'deferred',
+    verifierSource: 'pinned',
     evidence: `Deferred to the environment lane: ${requirement.command} runs in the shared checkout at delivery, against the merged tree.`,
     command: requirement.command,
   };
@@ -2799,7 +2800,7 @@ function legacyCustomSubmissionVerification(requirement: any, evidence: string) 
 
 function commandSubmissionVerification(ticket: any, requirement: any, evidence: string, candidateCommit: unknown, directCaptureInvocation?: string) {
   if (requirement.environment === 'shared') return { result: deferredVerification(requirement), expectedEvidence: null };
-  const error = evidence === requirement.command ? verifyCommandError(requirement.command) : null;
+  const error = requirement.command ? verifyCommandError(requirement.command) : null;
   if (error) {
     return {
       result: { kind: requirement.kind, status: 'could_not_run', evidence: error, command: requirement.command, failureIdentities: ['could_not_run:invalid-command'] },
@@ -2929,6 +2930,7 @@ function submitTicket(slug?: any, idOrRef?: any, by?: any, opts?: any) {
   const submissionComment = preparedSubmissionComment(opts);
   const found = getTicket(slug, idOrRef);
   if (!found) return { ok: false, reason: 'not_found' };
+  opts = { ...opts, verify: pinnedVerificationRequirement(found).command || opts.verify };
   return dependencies.withCompositionGenerationLock(slug, found.id, () => {
     const t = getTicket(slug, found.id);
     if (!t) return { ok: false, reason: 'not_found' };
