@@ -2,6 +2,10 @@
 
 Quality Gate owns AST complexity, stable function identities and per-function CRAP scoring. It uses TypeScript 7 from the scored project first, then the plugin's installed dependency. Install the plugin's dependencies with `npm install` in this directory if neither has the supported parser API.
 
+`--source <path>` narrows configured or default sources for one run without changing config. Repeat it for multiple files or directories, relative to the measured project root, for example `crap --project <root> --source src/changed.py --source src/other.py --cc-only`. Config exclusions still apply; selectors cannot widen configured sources.
+
+Invalid UTF-8, Python syntax errors and lone surrogates produce an informational UNVERIFIED row for that file. Other selected files are still measured.
+
 ## Project CRAP gate
 
 ```text
@@ -23,7 +27,7 @@ node plugins/quality-gate/bin/quality-gate.js crap --project <root> --base <revi
 
 Defaults: sources `.`, no exclusions, `coverage/lcov.info`, no coverage command, local `develop`, `main` or `master` as the base. If none exists, or `--base HEAD` is selected, all selected bodies are scored. `--base` uses the merge base with HEAD. `--ratchet` and config `ratchet` remain accepted with a deprecation notice. `max` is accepted only as 6. Directory scans skip `.git`, `node_modules` and `.claude`; explicitly named files still work.
 
-Each changed body is `new`, `modified-raised` (complexity increased) or `legacy-unchanged` (complexity held or fell). Every new or physically modified owned body must score strictly below 6 with measured coverage, including equal or lowered complexity. These classifications describe the change; none exempts it. Exact owned source bytes determine change, so comments and formatting count. Nested owned bodies are excluded from their parent's fingerprint. Explicit user/project rules remain authoritative. Scores are compared before display rounding. Functions unchanged at the base don't enter the scoring scope; an empty scope says `nothing to score` and why.
+Each changed body is `new`, `modified-raised` (complexity increased) or `legacy-unchanged` (complexity held or fell). New and complexity-raised bodies must score strictly below 6 with measured coverage. Legacy edits with equal or lower complexity are informational LEGACY rows, with their measured numbers; they never fail the gate. Exact owned source bytes determine change, so comments and formatting count. Nested owned bodies are excluded from their parent's fingerprint. Explicit user/project rules remain authoritative. Scores are compared before display rounding. Functions unchanged at the base don't enter the scoring scope; an empty scope says `nothing to score` and why.
 
 JS/TS `.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`, `.jsx` and `.tsx` use runtime function definitions from the AST. Type aliases and interfaces aren't functions. Nested bodies own their decisions independently. PHP and Vue script sections use lizard; install it with `uv tool install lizard`, `pipx install lizard` or `pip install lizard`. PHP uses exact bytes in its bound Lizard line span; Vue uses the bound script AST's owned bytes. Overlapping Lizard spans (nested or shared-line bodies) cannot establish independent ownership and are UNVERIFIED. A row that cannot be bound to a source definition is informational-unverified. `--complexity <lizard.csv>` accepts existing PHP/Vue CSV rows only; it never supplies a JS/TS score. Python uses the stdlib AST adapter described below, with no radon or pip dependency at runtime.
 
@@ -71,7 +75,7 @@ Use locally installed `coverage.py` (for example `pipx install coverage`) to gen
 
 ## Same-byte coverage
 
-`--coverage-command` runs in the measured tree with a 5-minute timeout. Sources are hashed before and after; a source edit invalidates the run. `QUALITY_GATE_COVERAGE_DIR` and the compatible `QUARTERMASTER_COVERAGE_DIR` name a fresh empty report directory. Write `lcov.info` there, leaving config `lcov` unset. An explicit LCOV path wins; otherwise isolated output wins over `coverage/lcov.info`. Existing fallback or explicit output must be rewritten during the command.
+`--coverage-command` runs in the measured tree with a 5-minute timeout. Sources are hashed before and after; a source edit invalidates the run. `QUALITY_GATE_COVERAGE_DIR` and the compatible `QUARTERMASTER_COVERAGE_DIR` name a fresh empty report directory. Write `lcov.info` there. Explicit CLI `--lcov` wins over isolated output and config. Otherwise isolated output wins over config `lcov`, which is a fallback (default `coverage/lcov.info`). Without a command, the CLI path, configured path or default is read in that order. Existing fallback or explicit output must be rewritten during the command. Missing or invalid selected output stays unverified; a stale configured file never replaces fresh isolated output.
 
 For pre-existing LCOV, supply a sibling `<lcov>.sources.json` containing SHA-256 hashes captured alongside that coverage, keyed by project-relative source path:
 
@@ -107,7 +111,7 @@ This command consumes an existing same-session V8 capture and prints JSON. It ru
 node plugins/quality-gate/bin/quality-gate.js measure --project <root> --coverage <V8-directory> --new-external-file <absolute path> --new-external-file <another absolute path>
 ```
 
-Repeat `--new-external-file` for each new helper outside the project. External-only measurement needs neither Git nor `--base`. Mixed repository/external measurement still requires `--base` for the repository files. Every declared external body uses an empty baseline and is enforced as `new`; this option never exempts repository or legacy bodies. The JavaScript API is `measureFiles(files, { projectRoot, base, coverageDirectory, externalNewFiles })`, with `externalNewFiles` defaulting to `[]`.
+Repeat `--new-external-file` for each new helper outside the project. External-only measurement needs neither Git nor `--base`. Mixed repository/external measurement still requires `--base` for the repository files. Every declared external body uses an empty baseline and is enforced as `new`; repository bodies still use their base comparison. The JavaScript API is `measureFiles(files, { projectRoot, base, coverageDirectory, externalNewFiles })`, with `externalNewFiles` defaulting to `[]`.
 
 Declarations must name normalized absolute canonical regular `.js`, `.cjs` or `.mjs` files outside the project root. Relative/traversal paths, missing files, symlink/junction/short-name/case aliases, duplicate identities and unsupported extensions are refused with the path and reason, without a passing row. External bytes are decoded as strict UTF-8 and hashed directly. BOM bytes are retained and refused because current parser offsets drift; source text is never reshaped to make a capture match. Each external row has `admission: "external-new"`, an absolute canonical `relativePath`, raw-byte `sourceHash` (SHA-256), and `evaluatorVersions` naming the resolved TypeScript version and running Node version.
 

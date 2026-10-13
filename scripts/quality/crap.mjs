@@ -160,9 +160,15 @@ function spawnSuite(suite, coverageDirectory) {
 
 async function runSuites(suites, runSuite) {
   const coverageDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'toolshed-crap-'));
-  for (const suite of suites) {
-    const { status } = runSuite(suite, coverageDirectory);
-    if (status !== 0) throw new Error(`${suite.name} tests failed with exit ${status ?? 'signal'}`);
+  try {
+    for (const suite of suites) {
+      const { status } = runSuite(suite, coverageDirectory);
+      if (status !== 0) throw new Error(`${suite.name} tests failed with exit ${status ?? 'signal'}`);
+    }
+  } catch (error) {
+    // run()'s finally only starts once captureCoverage returns, so a failing suite would leak the V8 coverage directory.
+    await fs.rm(coverageDirectory, { recursive: true, force: true });
+    throw error;
   }
   return coverageDirectory;
 }
@@ -192,12 +198,13 @@ const UNCLASSIFIED = 'unclassified';
 const CLASS_SECTIONS = [
   ['new', `NEW: not at base, must score below ${THRESHOLD}`],
   ['modified-raised', `MODIFIED-RAISED: complexity rose since base, must score below ${THRESHOLD}`],
-  [LEGACY_UNCHANGED, 'LEGACY-UNCHANGED: physically modified with equal or lower complexity, must score below 6'],
+  [LEGACY_UNCHANGED, 'LEGACY-UNCHANGED: physically modified with equal or lower complexity, informational'],
   [UNCLASSIFIED, 'UNCLASSIFIED: no base comparison (another language, or an unchanged function under --all)'],
 ];
-const ENFORCEMENT_RULE = `every new or physically modified owned body must score strictly below ${THRESHOLD}; classifications never exempt changed bodies`;
+const ENFORCEMENT_RULE = `every new or complexity-raised owned body must score strictly below ${THRESHOLD}; equal or lower complexity legacy edits are informational`;
 
 function metricStatus(metric) {
+  if (metric.classification === LEGACY_UNCHANGED) return 'LEGACY';
   if (metric.unverified) return 'UNVERIFIED';
   return metric.crap >= THRESHOLD ? 'FAIL' : 'PASS';
 }

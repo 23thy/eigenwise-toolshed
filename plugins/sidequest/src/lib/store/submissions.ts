@@ -906,6 +906,17 @@ function integrationTargetBehindLandedCandidate(ticket: any, target: any, eviden
   };
 }
 
+function canReconcileExpectedUpstream(repo: string, submission: { base: string; commit: string }, currentUpstream: string, deliveryMethod?: string) {
+  return commitIsAncestor(repo, submission.base, currentUpstream)
+    || (workingTreeDeliveryMethod(deliveryMethod) && !commitIsAncestor(repo, submission.commit, currentUpstream));
+}
+
+function missingSubmissionBaseDependency(slug: string, repo: string, base: string, currentUpstream: string) {
+  const missing = new Set(integrationGit(repo, ['rev-list', base, '--not', currentUpstream]).split(/\r?\n/));
+  const dependencies = listTickets(slug).filter((ticket: { submission?: { commit?: string } }) => missing.has(String(ticket.submission?.commit)));
+  return dependencies.map((ticket: { ref: string; submission: { commit: string } }) => `${ticket.ref} (${ticket.submission.commit})`).join(', ') || base;
+}
+
 function validateIntegrationSubmission(slug?: any, idOrRef?: any, opts?: any) {
   const ticket = getTicket(slug, idOrRef);
   if (!ticket) return { ok: false, reason: 'not_found' };
@@ -996,41 +1007,21 @@ function validateIntegrationSubmission(slug?: any, idOrRef?: any, opts?: any) {
   if (!scopeValidation.ok && opts?.deliveryInteractionCommit && scopeValidation.reason === 'reconciled_path_diverged') {
     scopeValidation = Object.assign({}, scopeValidation, { ok: true, reviewedMergedTreeInteraction: true });
   }
-  // The divergence refusal below prescribes exactly this recovery — re-apply the
-  // verified candidate by hand, re-gate it, record it with groomClose and deliveryCommit
-  // — and then refused it, leaving a shipped candidate closable only as abandoned
-  // (SQ-23, GH-233). The expected-upstream ancestry assertion protects the merge
-  // integrate performs, not this record: a reset, working-tree or manual delivery still
-  // has to name the immutable pinned candidate and prove that content is present, and
-  // re-validating rather than waiving keeps every other range and admitted scope
-  // invariant in force. The waiver itself only opens when the pinned candidate is not
-  // reachable from the current upstream — the same non-reachability recordDeliveredSubmission
-  // requires before it treats a delivery as pinned-working-tree — so naming a method
-  // alone never excuses an ordinary reachable delivery from the recorded expected
-  // upstream.
-  if (!scopeValidation.ok && scopeValidation.reason === 'expected_upstream_diverged' && workingTreeDeliveryMethod(opts?.deliveryMethod)) {
-    let candidateReachable = true;
-    try {
-      integrationGit(project?.path, ['merge-base', '--is-ancestor', ticket.submission.commit, scopeValidation.currentUpstream]);
-    } catch (error: any) {
-      if (error?.status === 1) candidateReachable = false;
-      else throw error;
-    }
-    if (!candidateReachable) {
-      scopeValidation = commitScope.validateStoredSubmissionRange(project?.path, ticket.submission, ticket.ref, integrationRefs, { allowDivergedExpectedUpstream: true });
-    }
+  if (!scopeValidation.ok && scopeValidation.reason === 'expected_upstream_diverged' && canReconcileExpectedUpstream(project?.path, ticket.submission, scopeValidation.currentUpstream, opts?.deliveryMethod)) {
+    scopeValidation = commitScope.validateStoredSubmissionRange(project?.path, ticket.submission, ticket.ref, integrationRefs, { allowDivergedExpectedUpstream: true });
   }
   if (!scopeValidation.ok) {
     const outside = Array.isArray(scopeValidation.outside) ? scopeValidation.outside : [];
     if (scopeValidation.reason === 'expected_upstream_diverged') {
       const targetBranch = String(target?.branch || '').trim() || scopeValidation.upstream || 'the configured target';
+      const dependency = missingSubmissionBaseDependency(slug, project?.path, ticket.submission.base, scopeValidation.currentUpstream);
       return {
         ok: false,
         reason: scopeValidation.reason,
         outside,
         ticket,
         scopeValidation,
-        message: `${ticket.ref} integration refused; recorded expected upstream ${scopeValidation.upstreamCommit} is no longer reachable from target branch ${targetBranch}. Recovery: re-apply the verified candidate onto the current target, re-gate it, then record it with groomClose passing deliveryCommit ${ticket.submission.commit} and deliveryMethod "manual" (CLI --delivery-commit / --delivery-method), with the candidate's content present in the integration working tree.`,
+        message: `${ticket.ref} integration refused; recorded expected upstream ${scopeValidation.upstreamCommit} is no longer reachable from target branch ${targetBranch}. Missing candidate dependency: ${dependency}. Recovery: re-apply the verified candidate onto the current target, re-gate it, then record it with groomClose passing deliveryCommit ${ticket.submission.commit} and deliveryMethod "manual" (CLI --delivery-commit / --delivery-method), with the candidate's content present in the integration working tree.`,
       };
     }
     const scopeFailure = scopeValidation.message || (scopeValidation.reason === 'missing_scope_snapshot'
@@ -1269,22 +1260,6 @@ function deliveryInProgress(ticket: any, lock: string) {
   return { ok: false, reason: 'delivery_in_progress', ticket, holder, message: named };
 }
 
-// A sibling that submitted while the post-merge suite ran recorded the delivery as its expected upstream. The
-// rollback takes that commit off the target, so leaving the record behind refused the sibling as diverged on
-// every later integrate (GH-308).
-function restoreRolledBackExpectedUpstreams(slug: any, repo: string, before: string, rolledBackHead: string) {
-  const rolledBack = new Set(integrationGit(repo, ['rev-list', `${before}..${rolledBackHead}`]).split(/\r?\n/).filter(Boolean));
-  const recordsRolledBackUpstream = (ticket: any) => pendingSubmission(ticket) && rolledBack.has(ticket.submission.upstreamCommit);
-  const pointRecordsAtPreMergeHead = () => {
-    for (const ticket of listTickets(slug).filter(recordsRolledBackUpstream)) {
-      ticket.submission.upstreamCommit = before;
-      ticket.updatedAt = new Date().toISOString();
-      putTicket(slug, ticket);
-    }
-  };
-  transaction(pointRecordsAtPreMergeHead);
-}
-
 function handResolvedConflictRecovery(ticket: any, candidate: string, targetBranch: string) {
   return `Resolve it by hand: on ${targetBranch} merge the pinned candidate itself (\`git merge --no-ff ${candidate}\`, not a cherry-pick), resolve the conflict in that merge commit, commit and re-gate it, then record it with integrate deliveryCommit ${candidate} and reason (CLI \`sidequest integrate ${ticket.ref} --delivery-commit ${candidate} --reason "<resolution>"\`), or with groomClose passing deliveryCommit <the resolved merge commit> and deliveryMethod "manual". Keeping ${candidate} as a parent of that merge is what proves the candidate content; either record still requires the bound review and a passing merged-tree gate.`;
 }
@@ -1293,7 +1268,6 @@ function postMergeVerificationFailure(slug: any, ticket: any, verify: any, repo:
   const verificationMessage = `${ticket.ref} verification returned ${verify.status} after ${mode} delivery: ${verify.command || `verification ${verify.status}`}. Log: ${verify.logPath || 'not created'}.`;
   try {
     const rollback = restorePostMergeVerificationCheckout(repo, before, deliveryHead, targetBranch, mode, ignoredDirtyPaths);
-    restoreRolledBackExpectedUpstreams(slug, repo, before, deliveryHead);
     return integrationFailure(slug, ticket, {
       reason: `${verificationOutcome(verify)}_post_merge`,
       before,
@@ -2507,7 +2481,6 @@ function rollBackUnverifiedWave(slug: string | undefined, assembled: AssembledWa
   } catch (rollbackError: any) {
     return { ok: false, reason: `${verificationOutcome(verification)}_wave_delivery_rollback_failed`, tickets: assembled.tickets, before, verify: verification, message: `Wave ${assembled.wave.id} verification failed and rollback failed: ${integrationGitError(rollbackError)}` };
   }
-  restoreRolledBackExpectedUpstreams(slug, repo, before, resultingHead);
   return { ok: false, reason: `${verificationOutcome(verification)}_wave_delivery`, tickets: assembled.tickets, before, verify: verification, message: `Wave ${assembled.wave.id} delivery verification returned ${verification.status}.` };
 }
 
@@ -2765,6 +2738,7 @@ function deferredVerification(requirement: any) {
   return {
     kind: requirement.kind,
     status: 'deferred',
+    verifierSource: 'pinned',
     evidence: `Deferred to the environment lane: ${requirement.command} runs in the shared checkout at delivery, against the merged tree.`,
     command: requirement.command,
   };
@@ -2799,7 +2773,7 @@ function legacyCustomSubmissionVerification(requirement: any, evidence: string) 
 
 function commandSubmissionVerification(ticket: any, requirement: any, evidence: string, candidateCommit: unknown, directCaptureInvocation?: string) {
   if (requirement.environment === 'shared') return { result: deferredVerification(requirement), expectedEvidence: null };
-  const error = evidence === requirement.command ? verifyCommandError(requirement.command) : null;
+  const error = requirement.command ? verifyCommandError(requirement.command) : null;
   if (error) {
     return {
       result: { kind: requirement.kind, status: 'could_not_run', evidence: error, command: requirement.command, failureIdentities: ['could_not_run:invalid-command'] },
@@ -2929,6 +2903,7 @@ function submitTicket(slug?: any, idOrRef?: any, by?: any, opts?: any) {
   const submissionComment = preparedSubmissionComment(opts);
   const found = getTicket(slug, idOrRef);
   if (!found) return { ok: false, reason: 'not_found' };
+  opts = { ...opts, verify: pinnedVerificationRequirement(found).command || opts.verify };
   return dependencies.withCompositionGenerationLock(slug, found.id, () => {
     const t = getTicket(slug, found.id);
     if (!t) return { ok: false, reason: 'not_found' };
@@ -3039,6 +3014,7 @@ function submitTicket(slug?: any, idOrRef?: any, by?: any, opts?: any) {
       worktree,
       admittedScope,
       ...(pinnedBaseline ? { baseline: pinnedBaseline } : {}),
+      workProvenance: t.dispatch?.workProvenance,
       unscopedPaths: gatedPaths,
       ...(rejectedSubmission ? { supersedesRejectedSubmission: rejectedSubmission.commit } : {}),
       ...(inheritedPaths.length ? { inheritedPaths } : {}),
@@ -3457,15 +3433,40 @@ function recordSubmissionRejection(slug?: any, idOrRef?: any, opts?: any) {
 // removed privileged route and is deliberately never read: MCP and CLI hand the
 // store nothing but caller-supplied JSON, so no argument here can prove an
 // external release principal.
+// Text over a stored field's cap is kept whole as a ticket comment by the caller, and the field keeps a
+// truncated summary that ends in the comment id (GH-424). Built before the lock so a text no comment can hold
+// is refused with nothing written.
+function overlongReworkComment(by: string, review: string, reason: string, source: any) {
+  const parts = [['review', review, REJECTION_REVIEW_MAX], ['reason', reason, REJECTION_REASON_MAX]]
+    .filter(([, text, max]) => (text as string).length > (max as number))
+    .map(([name, text]) => `${name}:\n${text}`);
+  if (!parts.length) return null;
+  const prepared: any = prepareComment({ by, source, body: `Full rework text; the stored review and reason hold a truncated summary.\n\n${parts.join('\n\n')}` });
+  if (!prepared.ok) {
+    throw new Error(`rework: review and reason are too long to keep even as a comment (${prepared.length} chars, max ${prepared.max}). Put the findings in a ticket comment and keep review and reason to a summary.`);
+  }
+  return prepared;
+}
+
+function storeOverlongReworkText(ticket: any, prepared: any, review: string, reason: string) {
+  if (!prepared) return { review, reason };
+  const comment = createComment(prepared);
+  if (!Array.isArray(ticket.comments)) ticket.comments = [];
+  ticket.comments.push(comment);
+  const pointer = ` … [full text: comment ${comment.id}]`;
+  const summary = (text: string, max: number) => (text.length > max ? text.slice(0, max - pointer.length) + pointer : text);
+  return { review: summary(review, REJECTION_REVIEW_MAX), reason: summary(reason, REJECTION_REASON_MAX) };
+}
+
 function reworkSubmission(slug?: any, idOrRef?: any, opts?: any) {
   opts = opts || {};
   const by = String(opts.by || '').trim();
-  const review = String(opts.review || '').trim();
-  const reason = String(opts.reason || '').trim();
+  const fullReview = String(opts.review || '').trim();
+  const fullReason = String(opts.reason || '').trim();
   if (!by) throw new Error('rework requires the reviewer or orchestrator identity in by');
-  if (!review) throw new Error('rework: "review" is required.');
-  if (!reason) throw new Error('rework requires the review rejection reason');
-  if (review.length > REJECTION_REVIEW_MAX || reason.length > REJECTION_REASON_MAX) throw new Error('rework review evidence or reason exceeds its maximum length');
+  if (!fullReview) throw new Error('rework: "review" is required.');
+  if (!fullReason) throw new Error('rework requires the review rejection reason');
+  const overlong = overlongReworkComment(by, fullReview, fullReason, opts.source);
   const found = getTicket(slug, idOrRef);
   if (!found) return { ok: false, reason: 'not_found' };
   return withTicketLock(slug, found.id, () => {
@@ -3501,6 +3502,7 @@ function reworkSubmission(slug?: any, idOrRef?: any, opts?: any) {
           projectCapabilities: retryCheckpoint.projectCapabilities,
           verify: retryCheckpoint.verify,
         };
+      const { review, reason } = storeOverlongReworkText(ticket, overlong, fullReview, fullReason);
       const rejected = Object.assign({}, rejectedCandidate, {
         rejectedAt: new Date().toISOString(),
         rejectedBy: by,
@@ -3533,6 +3535,7 @@ function reworkSubmission(slug?: any, idOrRef?: any, opts?: any) {
       if (recovered.ok) queueEventNotification(slug, ticket, ticket.lastEventType, ticket.lastEventSource);
       return recovered;
     }
+    const { review, reason } = storeOverlongReworkText(ticket, overlong, fullReview, fullReason);
     const rejected = Object.assign({}, ticket.submission, {
       rejectedAt: new Date().toISOString(),
       rejectedBy: by,

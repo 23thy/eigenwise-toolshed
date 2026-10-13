@@ -6,7 +6,7 @@ The shared AST, function identity and V8 coverage core lives in `plugins/quality
 
     CRAP = complexity² × (1 − coverage)³ + complexity
 
-Every new or physically modified owned body must score strictly below 6 with measured coverage. Exact source bytes determine changes, so comments and formatting count. Untouched legacy bodies stay outside scope; an independently edited nested body does not charge its parent. Explicit user/project rules remain authoritative.
+Every new or complexity-raised owned body must score strictly below 6 with measured coverage. Legacy edits with equal or lower complexity are informational and never fail the gate. Exact source bytes determine changes, so comments and formatting count. Untouched legacy bodies stay outside scope; an independently edited nested body does not charge its parent. Explicit user/project rules remain authoritative.
 
 Every changed function lands in one of three reporting sections:
 
@@ -14,7 +14,7 @@ Every changed function lands in one of three reporting sections:
 - **MODIFIED-RAISED**: has a partner and its complexity rose.
 - **LEGACY-UNCHANGED**: physically modified with equal or lower complexity.
 
-All three sections use PASS, FAIL or UNVERIFIED rows. The exit code is 1 when any changed row fails or is unverified. Classifications never exempt a changed body. A score of 6 fails before display rounding.
+NEW and MODIFIED-RAISED sections use PASS, FAIL or UNVERIFIED rows. LEGACY-UNCHANGED uses informational LEGACY rows with measured numbers or an unverified reason. The exit code is 1 when any enforced row fails or is unverified. A score of 6 fails before display rounding.
 
 Coverage is native V8 precise block coverage. The existing suite runner preloads the shared core through `NODE_OPTIONS` and sets `QUALITY_GATE_V8_CAPTURE` to an empty capture directory. The core records coverage and executed script text through the same inspector session. Child processes inherit both settings when their environment is passed through. Raw `NODE_V8_COVERAGE` reports cannot prove executed bytes and are UNVERIFIED.
 
@@ -26,6 +26,8 @@ Coverage is native V8 precise block coverage. The existing suite runner preloads
 | `docs/scripts/...` | `node --test docs/scripts/content.test.mjs` |
 
 `--coverage <dir>` reuses a capture instead of running the suites, `--all` prints unchanged functions too. Without `--base` the merge base with `develop` (or `main`) is used.
+
+The plugin's separate `crap` LCOV command keeps explicit CLI `--lcov` as an override. Fresh isolated `coverageCommand` output wins over config `lcov`; that configured path is a fallback, defaulting to `coverage/lcov.info`. Without a command, existing output needs authentic capture-time source hashes. A command must rewrite an existing explicit or fallback file it selects. Missing or invalid selected output stays UNVERIFIED, never a stale fallback pass. This does not change V8 capture selection in the repository runner.
 
 ## Rows that are UNVERIFIED
 

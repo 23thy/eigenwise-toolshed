@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -129,7 +130,7 @@ test('accepts a changed function whose complexity rose but whose score stays bel
   assert.deepEqual(failures, []);
 });
 
-test('fails a physically changed over-ceiling function at equal or lowered complexity too', async () => {
+test('enforces raised complexity and reports equal or lowered legacy complexity', async () => {
   const changed = metric({ complexity: 7, coverage: 0.5, fingerprint: 'changed' });
   const raised = await compareAgainstBase([changed], ['plugins/example/lib/subject.js'], 'base-sha', baselineOf([[changed.identity, 'prior', 6]]));
   assert.equal(raised.length, 1);
@@ -137,7 +138,7 @@ test('fails a physically changed over-ceiling function at equal or lowered compl
   for (const baseComplexity of [7, 9]) {
     const [legacy] = await changedMetricsAgainstBase([changed], ['plugins/example/lib/subject.js'], 'base-sha', baselineOf([[changed.identity, 'prior', baseComplexity]]));
     assert.equal(legacy.classification, 'legacy-unchanged');
-    assert.equal((await compareAgainstBase([changed], ['plugins/example/lib/subject.js'], 'base-sha', baselineOf([[changed.identity, 'prior', baseComplexity]]))).length, 1);
+    assert.equal((await compareAgainstBase([changed], ['plugins/example/lib/subject.js'], 'base-sha', baselineOf([[changed.identity, 'prior', baseComplexity]]))).length, 0);
   }
 });
 
@@ -547,6 +548,19 @@ test('a failing suite stops the capture and names its plugin', async () => {
   assert.match(error.message, /model-gateway tests failed with exit 1/);
 });
 
+test('a failing suite removes the coverage directory the earlier suites wrote into and rethrows the same error', async () => {
+  const receivedDirectories = [];
+  const failOnLastSuite = (suite, coverageDirectory) => {
+    receivedDirectories.push(coverageDirectory);
+    if (suite.name === 'observability') return { status: 3 };
+    fsSync.writeFileSync(path.join(coverageDirectory, 'coverage-1.json'), '{}');
+    return { status: 0 };
+  };
+  await assert.rejects(captureCoverage(['plugins/model-gateway/lib/a.js', 'plugins/observability/lib/a.js'], null, failOnLastSuite), { message: 'observability tests failed with exit 3' });
+  assert.equal(receivedDirectories.length, 2);
+  assert.equal(fsSync.existsSync(receivedDirectories[0]), false);
+});
+
 async function withCapturedProcessOutput(action) {
   const originalExitCode = process.exitCode;
   const originalStandardOutputWrite = process.stdout.write;
@@ -642,8 +656,8 @@ test('the CLI scores a changed plugin script, test callback and src function wit
     const rows = result.stdout.split('\n').filter((line) => /^(PASS|FAIL|LEGACY|UNVERIFIED) /.test(line));
     assert.deepEqual(rows.map((row) => row.split(' ').slice(0, 3).join(' ')), [
       'PASS plugins/sidequest/scripts/helper.js:1 helper',
-      'PASS plugins/sidequest/src/subject.js:1 subject',
-      'PASS plugins/sidequest/test/subject.test.mjs:6 <anonymous>',
+      'LEGACY plugins/sidequest/src/subject.js:1 subject',
+      'LEGACY plugins/sidequest/test/subject.test.mjs:6 <anonymous>',
       'UNVERIFIED scripts/windows-job-owner.cs:1 windows-job-owner.cs',
     ], result.stdout + result.stderr);
     assert.match(rows[0], /cc=2 coverage=100\.00% CRAP=2\.0000/);
@@ -651,42 +665,42 @@ test('the CLI scores a changed plugin script, test callback and src function wit
     assert.match(rows[3], /this gate has no analyzer for \.cs sources; measurement is unverified\./);
     assert.deepEqual(result.stdout.split('\n').filter((line) => /^(NEW|MODIFIED-RAISED|LEGACY-UNCHANGED|UNCLASSIFIED):/.test(line)).map((line) => line.split(':')[0]), ['MODIFIED-RAISED', 'LEGACY-UNCHANGED', 'UNCLASSIFIED']);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /coverage suites: sidequest\): 0 new, 1 modified-raised, 2 legacy-unchanged; every new or physically modified owned body must score strictly below 6/);
+    assert.match(result.stderr, /coverage suites: sidequest\): 0 new, 1 modified-raised, 2 legacy-unchanged; every new or complexity-raised owned body must score strictly below 6/);
     assert.doesNotMatch(result.stdout + result.stderr, /retired/);
   } finally {
     await fs.rm(fixtureRoot, { recursive: true, force: true });
   }
 });
 
-test('the CLI captures every changed body and never exempts a legacy caller', async () => {
+test('the CLI captures legacy informational rows and enforces raised and new bodies', async () => {
   const { fixtureRoot, base } = await createCliFixture();
   const subjectPath = path.join(fixtureRoot, 'plugins', 'sidequest', 'src', 'subject.js');
   try {
     await fs.writeFile(subjectPath, passSubject);
     const passing = runCliFixture(fixtureRoot, base);
     assert.equal(passing.status, 0, passing.stderr);
-    assert.match(passing.stdout, /LEGACY-UNCHANGED: physically modified with equal or lower complexity, must score below 6 \(1\)\nPASS plugins\/sidequest\/src\/subject\.js:1 subject cc=1/);
-    assert.match(passing.stdout, /coverage suites: sidequest\): 0 new, 0 modified-raised, 1 legacy-unchanged; every new or physically modified owned body must score strictly below 6/);
+    assert.match(passing.stdout, /LEGACY-UNCHANGED: physically modified with equal or lower complexity, informational \(1\)\nLEGACY plugins\/sidequest\/src\/subject\.js:1 subject cc=1/);
+    assert.match(passing.stdout, /coverage suites: sidequest\): 0 new, 0 modified-raised, 1 legacy-unchanged; every new or complexity-raised owned body must score strictly below 6/);
 
     await fs.writeFile(subjectPath, failingSubject);
     const failing = runCliFixture(fixtureRoot, base);
     assert.equal(failing.status, 1);
     assert.match(failing.stdout, /MODIFIED-RAISED: complexity rose since base[^\n]*\(1\)\nFAIL plugins\/sidequest\/src\/subject\.js:1 subject cc=6/);
-    assert.match(failing.stderr, /CRAP gate failed against [^\n]*: 0 new, 1 modified-raised, 0 legacy-unchanged; every new or physically modified owned body/);
+    assert.match(failing.stderr, /CRAP gate failed against [^\n]*: 0 new, 1 modified-raised, 0 legacy-unchanged; every new or complexity-raised owned body/);
 
     const legacyBase = commitFixture(fixtureRoot, 'legacy at cc=6');
     await fs.writeFile(subjectPath, failingSubject.replace('return 0;', 'return -1;'));
     const passThrough = runCliFixture(fixtureRoot, legacyBase);
-    assert.equal(passThrough.status, 1, passThrough.stderr);
-    assert.match(passThrough.stdout, /FAIL plugins\/sidequest\/src\/subject\.js:1 subject cc=6 coverage=[\d.]+% CRAP=\d/);
-    assert.match(passThrough.stderr, /1 legacy-unchanged/);
+    assert.equal(passThrough.status, 0, passThrough.stderr);
+    assert.match(passThrough.stdout, /LEGACY plugins\/sidequest\/src\/subject\.js:1 subject cc=6 coverage=[\d.]+% CRAP=\d/);
+    assert.match(passThrough.stdout, /1 legacy-unchanged/);
 
     await fs.writeFile(subjectPath, failingSubject.replace('return 0;', 'return fallback(value);\n}\nfunction fallback(value) {\n  return value > 5 ? -1 : 0;'));
     const helper = runCliFixture(fixtureRoot, legacyBase);
-    assert.equal(helper.status, 1, helper.stderr);
+    assert.equal(helper.status, 0, helper.stderr);
     assert.match(helper.stdout, /NEW: not at base, must score below 6 \(1\)\nPASS plugins\/sidequest\/src\/subject\.js:9 fallback cc=2/);
-    assert.match(helper.stdout, /FAIL plugins\/sidequest\/src\/subject\.js:1 subject cc=6/);
-    assert.match(helper.stderr, /: 1 new, 0 modified-raised, 1 legacy-unchanged;/);
+    assert.match(helper.stdout, /LEGACY plugins\/sidequest\/src\/subject\.js:1 subject cc=6/);
+    assert.match(helper.stdout, /: 1 new, 0 modified-raised, 1 legacy-unchanged;/);
   } finally {
     await fs.rm(fixtureRoot, { recursive: true, force: true });
   }

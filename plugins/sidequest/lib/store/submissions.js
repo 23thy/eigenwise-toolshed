@@ -733,6 +733,14 @@ ${verify.outputTail}` : null
       message: `${ticket.ref} integration refused; ${candidate} is already contained in ${landedRef} at ${landedCommit}, but the registered checkout's ${target?.branch || "integration branch"} is not. The merged-tree gate only certifies the tree it runs in, and the board never fetches or pushes: bring ${target?.branch || "the integration branch"} to a commit containing it deliberately (your own fetch, then \`git merge --ff-only ${label}\`), then re-run this closure.`
     };
   }
+  function canReconcileExpectedUpstream(repo, submission, currentUpstream, deliveryMethod) {
+    return commitIsAncestor(repo, submission.base, currentUpstream) || workingTreeDeliveryMethod(deliveryMethod) && !commitIsAncestor(repo, submission.commit, currentUpstream);
+  }
+  function missingSubmissionBaseDependency(slug, repo, base, currentUpstream) {
+    const missing = new Set(integrationGit(repo, ["rev-list", base, "--not", currentUpstream]).split(/\r?\n/));
+    const dependencies2 = listTickets(slug).filter((ticket) => missing.has(String(ticket.submission?.commit)));
+    return dependencies2.map((ticket) => `${ticket.ref} (${ticket.submission.commit})`).join(", ") || base;
+  }
   function validateIntegrationSubmission(slug, idOrRef, opts) {
     const ticket = getTicket(slug, idOrRef);
     if (!ticket) return { ok: false, reason: "not_found" };
@@ -810,29 +818,21 @@ ${verify.outputTail}` : null
     if (!scopeValidation.ok && opts?.deliveryInteractionCommit && scopeValidation.reason === "reconciled_path_diverged") {
       scopeValidation = Object.assign({}, scopeValidation, { ok: true, reviewedMergedTreeInteraction: true });
     }
-    if (!scopeValidation.ok && scopeValidation.reason === "expected_upstream_diverged" && workingTreeDeliveryMethod(opts?.deliveryMethod)) {
-      let candidateReachable = true;
-      try {
-        integrationGit(project?.path, ["merge-base", "--is-ancestor", ticket.submission.commit, scopeValidation.currentUpstream]);
-      } catch (error) {
-        if (error?.status === 1) candidateReachable = false;
-        else throw error;
-      }
-      if (!candidateReachable) {
-        scopeValidation = commitScope.validateStoredSubmissionRange(project?.path, ticket.submission, ticket.ref, integrationRefs, { allowDivergedExpectedUpstream: true });
-      }
+    if (!scopeValidation.ok && scopeValidation.reason === "expected_upstream_diverged" && canReconcileExpectedUpstream(project?.path, ticket.submission, scopeValidation.currentUpstream, opts?.deliveryMethod)) {
+      scopeValidation = commitScope.validateStoredSubmissionRange(project?.path, ticket.submission, ticket.ref, integrationRefs, { allowDivergedExpectedUpstream: true });
     }
     if (!scopeValidation.ok) {
       const outside = Array.isArray(scopeValidation.outside) ? scopeValidation.outside : [];
       if (scopeValidation.reason === "expected_upstream_diverged") {
         const targetBranch = String(target?.branch || "").trim() || scopeValidation.upstream || "the configured target";
+        const dependency = missingSubmissionBaseDependency(slug, project?.path, ticket.submission.base, scopeValidation.currentUpstream);
         return {
           ok: false,
           reason: scopeValidation.reason,
           outside,
           ticket,
           scopeValidation,
-          message: `${ticket.ref} integration refused; recorded expected upstream ${scopeValidation.upstreamCommit} is no longer reachable from target branch ${targetBranch}. Recovery: re-apply the verified candidate onto the current target, re-gate it, then record it with groomClose passing deliveryCommit ${ticket.submission.commit} and deliveryMethod "manual" (CLI --delivery-commit / --delivery-method), with the candidate's content present in the integration working tree.`
+          message: `${ticket.ref} integration refused; recorded expected upstream ${scopeValidation.upstreamCommit} is no longer reachable from target branch ${targetBranch}. Missing candidate dependency: ${dependency}. Recovery: re-apply the verified candidate onto the current target, re-gate it, then record it with groomClose passing deliveryCommit ${ticket.submission.commit} and deliveryMethod "manual" (CLI --delivery-commit / --delivery-method), with the candidate's content present in the integration working tree.`
         };
       }
       const scopeFailure = scopeValidation.message || (scopeValidation.reason === "missing_scope_snapshot" ? `${ticket.ref} submission has no admitted scope snapshot.` : outside.length ? `${ticket.ref} integration refused; submitted range changes paths outside its admitted scope: ${outside.join(", ")}.` : `${ticket.ref} integration refused; submitted range validation failed: ${scopeValidation.reason || "unknown"}.`);
@@ -1015,18 +1015,6 @@ ${verify.outputTail}` : null
     const named = holder?.ticket && holder.startedAt ? `Integration is already delivering ${holder.ticket} (${holder.pinnedCommit}) into this checkout since ${holder.startedAt}; log ${holder.logPath}. Retry ${ticket.ref} after it finishes.` : `Integration is already delivering another submission into this checkout. Retry ${ticket.ref} after that delivery finishes.`;
     return { ok: false, reason: "delivery_in_progress", ticket, holder, message: named };
   }
-  function restoreRolledBackExpectedUpstreams(slug, repo, before, rolledBackHead) {
-    const rolledBack = new Set(integrationGit(repo, ["rev-list", `${before}..${rolledBackHead}`]).split(/\r?\n/).filter(Boolean));
-    const recordsRolledBackUpstream = (ticket) => pendingSubmission(ticket) && rolledBack.has(ticket.submission.upstreamCommit);
-    const pointRecordsAtPreMergeHead = () => {
-      for (const ticket of listTickets(slug).filter(recordsRolledBackUpstream)) {
-        ticket.submission.upstreamCommit = before;
-        ticket.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-        putTicket(slug, ticket);
-      }
-    };
-    transaction(pointRecordsAtPreMergeHead);
-  }
   function handResolvedConflictRecovery(ticket, candidate, targetBranch) {
     return `Resolve it by hand: on ${targetBranch} merge the pinned candidate itself (\`git merge --no-ff ${candidate}\`, not a cherry-pick), resolve the conflict in that merge commit, commit and re-gate it, then record it with integrate deliveryCommit ${candidate} and reason (CLI \`sidequest integrate ${ticket.ref} --delivery-commit ${candidate} --reason "<resolution>"\`), or with groomClose passing deliveryCommit <the resolved merge commit> and deliveryMethod "manual". Keeping ${candidate} as a parent of that merge is what proves the candidate content; either record still requires the bound review and a passing merged-tree gate.`;
   }
@@ -1034,7 +1022,6 @@ ${verify.outputTail}` : null
     const verificationMessage = `${ticket.ref} verification returned ${verify.status} after ${mode} delivery: ${verify.command || `verification ${verify.status}`}. Log: ${verify.logPath || "not created"}.`;
     try {
       const rollback = restorePostMergeVerificationCheckout(repo, before, deliveryHead, targetBranch, mode, ignoredDirtyPaths);
-      restoreRolledBackExpectedUpstreams(slug, repo, before, deliveryHead);
       return integrationFailure(slug, ticket, {
         reason: `${verificationOutcome(verify)}_post_merge`,
         before,
@@ -2059,7 +2046,6 @@ ${verify.outputTail}` : null
     } catch (rollbackError) {
       return { ok: false, reason: `${verificationOutcome(verification)}_wave_delivery_rollback_failed`, tickets: assembled.tickets, before, verify: verification, message: `Wave ${assembled.wave.id} verification failed and rollback failed: ${integrationGitError(rollbackError)}` };
     }
-    restoreRolledBackExpectedUpstreams(slug, repo, before, resultingHead);
     return { ok: false, reason: `${verificationOutcome(verification)}_wave_delivery`, tickets: assembled.tickets, before, verify: verification, message: `Wave ${assembled.wave.id} delivery verification returned ${verification.status}.` };
   }
   function recordGitWaveDelivery(slug, assembled, target, prepared, resultingHead, verification) {
@@ -2303,6 +2289,7 @@ ${verify.outputTail}` : null
     return {
       kind: requirement.kind,
       status: "deferred",
+      verifierSource: "pinned",
       evidence: `Deferred to the environment lane: ${requirement.command} runs in the shared checkout at delivery, against the merged tree.`,
       command: requirement.command
     };
@@ -2331,7 +2318,7 @@ ${verify.outputTail}` : null
   }
   function commandSubmissionVerification(ticket, requirement, evidence, candidateCommit, directCaptureInvocation) {
     if (requirement.environment === "shared") return { result: deferredVerification(requirement), expectedEvidence: null };
-    const error = evidence === requirement.command ? verifyCommandError(requirement.command) : null;
+    const error = requirement.command ? verifyCommandError(requirement.command) : null;
     if (error) {
       return {
         result: { kind: requirement.kind, status: "could_not_run", evidence: error, command: requirement.command, failureIdentities: ["could_not_run:invalid-command"] },
@@ -2438,6 +2425,7 @@ ${verify.outputTail}` : null
     const submissionComment = preparedSubmissionComment(opts);
     const found = getTicket(slug, idOrRef);
     if (!found) return { ok: false, reason: "not_found" };
+    opts = { ...opts, verify: pinnedVerificationRequirement(found).command || opts.verify };
     return dependencies.withCompositionGenerationLock(slug, found.id, () => {
       const t = getTicket(slug, found.id);
       if (!t) return { ok: false, reason: "not_found" };
@@ -2531,6 +2519,7 @@ ${verify.outputTail}` : null
         worktree,
         admittedScope,
         ...pinnedBaseline ? { baseline: pinnedBaseline } : {},
+        workProvenance: t.dispatch?.workProvenance,
         unscopedPaths: gatedPaths,
         ...rejectedSubmission ? { supersedesRejectedSubmission: rejectedSubmission.commit } : {},
         ...inheritedPaths.length ? { inheritedPaths } : {},
@@ -2912,15 +2901,36 @@ ${verify.outputTail}` : null
       return preserved;
     });
   }
+  function overlongReworkComment(by, review, reason, source) {
+    const parts = [["review", review, REJECTION_REVIEW_MAX], ["reason", reason, REJECTION_REASON_MAX]].filter(([, text, max]) => text.length > max).map(([name, text]) => `${name}:
+${text}`);
+    if (!parts.length) return null;
+    const prepared = prepareComment({ by, source, body: `Full rework text; the stored review and reason hold a truncated summary.
+
+${parts.join("\n\n")}` });
+    if (!prepared.ok) {
+      throw new Error(`rework: review and reason are too long to keep even as a comment (${prepared.length} chars, max ${prepared.max}). Put the findings in a ticket comment and keep review and reason to a summary.`);
+    }
+    return prepared;
+  }
+  function storeOverlongReworkText(ticket, prepared, review, reason) {
+    if (!prepared) return { review, reason };
+    const comment = createComment(prepared);
+    if (!Array.isArray(ticket.comments)) ticket.comments = [];
+    ticket.comments.push(comment);
+    const pointer = ` … [full text: comment ${comment.id}]`;
+    const summary = (text, max) => text.length > max ? text.slice(0, max - pointer.length) + pointer : text;
+    return { review: summary(review, REJECTION_REVIEW_MAX), reason: summary(reason, REJECTION_REASON_MAX) };
+  }
   function reworkSubmission(slug, idOrRef, opts) {
     opts = opts || {};
     const by = String(opts.by || "").trim();
-    const review = String(opts.review || "").trim();
-    const reason = String(opts.reason || "").trim();
+    const fullReview = String(opts.review || "").trim();
+    const fullReason = String(opts.reason || "").trim();
     if (!by) throw new Error("rework requires the reviewer or orchestrator identity in by");
-    if (!review) throw new Error('rework: "review" is required.');
-    if (!reason) throw new Error("rework requires the review rejection reason");
-    if (review.length > REJECTION_REVIEW_MAX || reason.length > REJECTION_REASON_MAX) throw new Error("rework review evidence or reason exceeds its maximum length");
+    if (!fullReview) throw new Error('rework: "review" is required.');
+    if (!fullReason) throw new Error("rework requires the review rejection reason");
+    const overlong = overlongReworkComment(by, fullReview, fullReason, opts.source);
     const found = getTicket(slug, idOrRef);
     if (!found) return { ok: false, reason: "not_found" };
     return withTicketLock(slug, found.id, () => {
@@ -2952,11 +2962,12 @@ ${verify.outputTail}` : null
           projectCapabilities: retryCheckpoint.projectCapabilities,
           verify: retryCheckpoint.verify
         };
+        const { review: review2, reason: reason2 } = storeOverlongReworkText(ticket, overlong, fullReview, fullReason);
         const rejected2 = Object.assign({}, rejectedCandidate, {
           rejectedAt: (/* @__PURE__ */ new Date()).toISOString(),
           rejectedBy: by,
-          review,
-          reason,
+          review: review2,
+          reason: reason2,
           ...candidate.source === "git" ? { quarantineRef: rejectionQuarantineRef(ticket, history.length + 1) } : {},
           rejectionKind: "rework",
           preservationState: "pending",
@@ -2980,6 +2991,7 @@ ${verify.outputTail}` : null
         if (recovered.ok) queueEventNotification(slug, ticket, ticket.lastEventType, ticket.lastEventSource);
         return recovered;
       }
+      const { review, reason } = storeOverlongReworkText(ticket, overlong, fullReview, fullReason);
       const rejected = Object.assign({}, ticket.submission, {
         rejectedAt: (/* @__PURE__ */ new Date()).toISOString(),
         rejectedBy: by,

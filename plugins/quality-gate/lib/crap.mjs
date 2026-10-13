@@ -22,8 +22,19 @@ async function descriptors(text, file, analyzer, complexityCsv, root, policy, or
   return rows.map((row) => ({ ...row, informational: Boolean(row.unverified) }));
 }
 
+async function fileDescriptors(root, file, analyzer, complexityCsv, policy, oracles) {
+  const bytes = fs.readFileSync(path.resolve(root, file));
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch (error) {
+    return unsupportedDescriptor(bytes.toString('utf8'), file, 'UTF-8 decode failed: ' + error.message);
+  }
+  return descriptors(text, file, analyzer, complexityCsv, root, policy, oracles);
+}
+
 async function sourceMetrics(root, files, analyzer, complexityCsv, policy, oracles) {
-  return (await Promise.all(files.map(async (file) => (await descriptors(fs.readFileSync(path.resolve(root, file), 'utf8'), file, analyzer, complexityCsv, root, policy, oracles)).map((descriptor) => ({ ...descriptor, relativePath: file }))))).flat();
+  return (await Promise.all(files.map(async (file) => (await fileDescriptors(root, file, analyzer, complexityCsv, policy, oracles)).map((descriptor) => ({ ...descriptor, relativePath: file }))))).flat();
 }
 
 function scoredMetric(metric, report, input, lines) {
@@ -69,7 +80,9 @@ async function changedAgainstBase(report, analyzer) {
     }
     return descriptors(text, file, analyzer, undefined, report.root, report.pythonPolicy, oracles);
   };
-  return changedMetricsAgainstBase(report.metrics, Object.keys(report.files), report.base, readBaseline);
+  const changed = await changedMetricsAgainstBase(report.metrics, Object.keys(report.files), report.base, readBaseline);
+  const changedIdentities = new Set(changed.map((metric) => metric.relativePath + ':' + metric.identity));
+  return changed.concat(report.metrics.filter((metric) => metric.informational && !changedIdentities.has(metric.relativePath + ':' + metric.identity)));
 }
 
 export async function crapReport(options = {}) {
@@ -116,17 +129,23 @@ function pythonClassificationLabel(metric) {
   return ` adapter=${metric.adapterVersion} role=${metric.oracleClassification} (${metric.oracleReason}) policy=${metric.measurementPolicy}`;
 }
 
+function complexityFailureAdvice(metric) {
+  if (metric.classification === LEGACY_UNCHANGED) return '';
+  return metric.complexity >= THRESHOLD ? '; fails at any coverage, split the function, more tests cannot help' : '';
+}
+
 function metricLine(metric, ccOnly) {
   const label = `${metric.relativePath}:${metric.line} ${metric.name}${pythonClassificationLabel(metric)}`;
-  if (metric.unverified) return `UNVERIFIED ${label}: ${metric.unverified}`;
-  const prefix = ['PASS', 'FAIL'][Number(metric.crap >= THRESHOLD)];
+  const legacy = metric.classification === LEGACY_UNCHANGED;
+  if (metric.unverified) return `${legacy ? 'LEGACY UNVERIFIED' : 'UNVERIFIED'} ${label}: ${metric.unverified}`;
+  const prefix = legacy ? 'LEGACY' : ['PASS', 'FAIL'][Number(metric.crap >= THRESHOLD)];
   const measured = ccOnly ? ' (cc-only, no coverage)' : ` coverage=${(metric.coverage * 100).toFixed(2)}%`;
-  const advice = metric.complexity >= THRESHOLD ? '; fails at any coverage, split the function, more tests cannot help' : '';
+  const advice = complexityFailureAdvice(metric);
   return `${prefix} ${label} cc=${metric.complexity}${measured} CRAP=${metric.crap.toFixed(4)} source=${metric.source}${advice}`;
 }
 
 export function formatCrapReport(report) {
   if (report.nothingToScoreReason) return `CRAP gate: nothing to score. ${report.nothingToScoreReason}\n`;
   const rows = report.changedMetrics.length ? report.changedMetrics : report.unverified;
-  return rows.map((metric) => metricLine(metric, report.ccOnly)).join('\n') + `\nCRAP gate ${report.verdict}: ${report.failures.length} failures, ${report.unverified.length} unverified; ${report.checked} new or physically modified functions checked (strictly below ${THRESHOLD}).\n`;
+  return rows.map((metric) => metricLine(metric, report.ccOnly)).join('\n') + `\nCRAP gate ${report.verdict}: ${report.failures.length} failures, ${report.unverified.length} unverified; ${report.checked} new or complexity-raised functions checked (strictly below ${THRESHOLD}).\n`;
 }
