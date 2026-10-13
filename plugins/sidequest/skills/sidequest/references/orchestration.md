@@ -419,6 +419,13 @@ UNBOUND candidate back to `todo` for its owner.
 
 ## Natural orchestrator checkpoints
 
+A replacement dispatch with a clean retained checkpoint leads with a Resume section: worktree, pinned commit,
+last recorded verification and log path, and handback reason. After claiming and confirming HEAD, the executor
+runs the pinned verifier on that retained candidate first (unless environment-bound), then continues from
+the checkpoint. Read only new instructions or needed evidence, rather than the full historical thread.
+The full description, contract, scope, and pinned verifier still follow; historical verification is not
+a fresh capture. Lifecycle and verification references point at their owning executor template and skill.
+
 At every natural wakeup, do a short self-check before launching more work. Check payload and context bloat
 (first trim raw reports or reopen only the ticket comments you need), lingering workers (pulse and clear
 finished workers), route anomalies (the fresh ticket `exec` object, claim token, executor, effort, and

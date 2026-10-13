@@ -38,6 +38,8 @@ Replace `SQ-N` with the reference Claude gave you. Confirm the answer against th
 
 Once this save-and-read check works, use the story workflow below when the task needs planning or delegated implementation.
 
+When an executor hands back a clean committed checkpoint in a retained worktree, its replacement gets a Resume section first. It names the checkout, pinned commit, handback reason, and last recorded verification result and log. After claiming, the replacement confirms HEAD and runs the pinned verifier on that candidate before continuing (shared-environment checks still wait for delivery). It reads new instructions or missing evidence rather than starting over with the full thread. The complete description, contract, scope, and verifier remain in the briefing.
+
 ## Your first workflow
 
 1. Open the board with `/sidequest:board`, or tell Claude to show your Sidequest board.

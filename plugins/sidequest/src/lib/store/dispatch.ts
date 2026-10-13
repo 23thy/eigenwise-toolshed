@@ -8,7 +8,7 @@ const { compareSemver } = require('../plugin-freshness.js');
 const { WHOLE_TREE_SCOPE } = require('../commit-scope.js');
 const { compositionCheckoutCommit, consumePreparedComposition, consumedAdmissionRefusal } = require('./composition-admission.js');
 import type { CompositionDispatch, CompositionTicket } from './composition-admission';
-import type { VerificationRequirement } from '../kernel/verification';
+import type { CompletedVerificationCapture, VerificationRequirement } from '../kernel/verification';
 import { authorizeWorkDeclaration, prepareWorkProvenance, workDeclaration } from './work-provenance';
 
 type NativeCheckoutCreation = CompositionDispatch & {
@@ -1667,6 +1667,14 @@ function retainedOwnershipFallback(slug?: any, ticket?: any, state?: any, reposi
   return null;
 }
 
+function lastReleasedVerification(ticket: { verificationCaptures?: readonly CompletedVerificationCapture[] }, commit: string): CompletedVerificationCapture | null {
+  return ticket.verificationCaptures?.slice().reverse().find(capture => capture.candidate.source === 'git' && capture.candidate.value === commit) ?? null;
+}
+
+function releasedCheckpointEvidence(ticket: { verificationCaptures?: readonly CompletedVerificationCapture[] }, attempt: { release?: { reason?: string } } | null, commit: string) {
+  return { releaseReason: attempt?.release?.reason ?? null, verification: lastReleasedVerification(ticket, commit) };
+}
+
 function retainedWorktreeContinuationState(slug?: any, ticket?: any, state?: any) {
   const attempts = Array.isArray(state?.attempts) ? state.attempts : [];
   const attempt = attempts[attempts.length - 1] || null;
@@ -1743,7 +1751,8 @@ function retainedWorktreeContinuationState(slug?: any, ticket?: any, state?: any
     return {
       continuation: {
         mode: 'retained_worktree_resume', ticketRef: ticket.ref, sourceWorktree: worktree, sourceBranch, baseCommit, commit: observedRevision, commits,
-        clean: true, releasedAt: state.terminalAt, releaseKind: attempt?.release?.kind || (checkpointCommit ? 'checkpoint' : 'handback'), lease: leaseFacts,
+        clean: true, releasedAt: state.terminalAt, releaseKind: attempt?.release?.kind || (checkpointCommit ? 'checkpoint' : 'handback'),
+        ...releasedCheckpointEvidence(ticket, attempt, observedRevision), lease: leaseFacts,
       },
     };
   } catch (error: any) {
