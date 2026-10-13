@@ -839,11 +839,11 @@ function createDispatch(dependencies) {
     const state = dispatchState(ticket);
     if (state?.sharedTree !== false) return /* @__PURE__ */ new Map();
     const worktrees = [state.worktree, state.releaseObservedCheckout?.worktree].filter(Boolean).map((worktree) => canonicalPath(worktree));
-    return new Map(worktrees.map((worktree) => [worktree, observeWorktree(slug, worktree)]));
+    return new Map(worktrees.map((worktree) => [worktree, observeWorktree(slug, worktree, state.baseCommit)]));
   }
-  function observeWorktree(slug, worktree) {
+  function observeWorktree(slug, worktree, baseCommit) {
     const facts = immutableWorktreeFacts(slug, worktree);
-    return { facts, registered: registeredProjectCheckout(facts) };
+    return { facts, registered: registeredProjectCheckout(facts), commits: facts ? commitsSinceBaseline(facts.worktree, baseCommit, facts.revision) : [] };
   }
   function worktreeFactsFor(slug, worktree, observed) {
     return observed ? observed.get(canonicalPath(worktree))?.facts ?? null : immutableWorktreeFacts(slug, worktree);
@@ -857,6 +857,14 @@ function createDispatch(dependencies) {
     if (!factsDescribeBoundCheckout(facts, state)) return;
     state.terminalWorktreeRevision = facts.revision;
     state.terminalWorktreeObservedAt = at;
+    recordTerminalCheckoutCommits(state, terminalCheckoutCommits(state, facts, observed));
+  }
+  function terminalCheckoutCommits(state, facts, observed) {
+    return observed ? observed.get(canonicalPath(state.worktree))?.commits ?? [] : commitsSinceBaseline(facts.worktree, state.baseCommit, facts.revision);
+  }
+  function recordTerminalCheckoutCommits(state, commits) {
+    const recorded = Array.isArray(state.sanctionedCommits) ? state.sanctionedCommits.map(String) : [];
+    state.sanctionedCommits = [.../* @__PURE__ */ new Set([...recorded, ...commits])];
   }
   function terminalRevisionBound(slug, state) {
     return Boolean(slug) && state?.sharedTree === false && Boolean(state.worktree) && Boolean(state.worktreeGitDirectory) && Boolean(state.worktreeCommonGitDirectory);
@@ -2174,7 +2182,8 @@ function createDispatch(dependencies) {
   }
   function preparedDispatchRecord(slug, t, current, plan, opts, preflight) {
     const provenance = preparationProvenanceFields(plan, opts, preflight.preparedCompatibility);
-    const workProvenance = (0, import_work_provenance.prepareWorkProvenance)(preflight.projectPath, opts.workProvenance, String(opts.sessionId || ""), (ref) => getTicket(slug, ref));
+    const integrationCommit = opts.workProvenance ? integrationBaseCommit(slug, plan.integrationTargetState) : "";
+    const workProvenance = (0, import_work_provenance.prepareWorkProvenance)(preflight.projectPath, opts.workProvenance, String(opts.sessionId || ""), (ref) => getTicket(slug, ref), integrationCommit);
     return {
       ...provenance,
       lifecycleAttempt: { ...provenance.lifecycleAttempt, workProvenance },

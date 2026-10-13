@@ -83,6 +83,21 @@ function git(root, argumentsList, input) {
 function gitLines(root, argumentsList, input) {
   return git(root, argumentsList, input).toString().trim().split(/\r?\n/).filter(Boolean);
 }
+function gitSucceeds(root, argumentsList) {
+  try {
+    git(root, argumentsList);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function gitLinesOrEmpty(root, argumentsList) {
+  try {
+    return gitLines(root, argumentsList);
+  } catch {
+    return [];
+  }
+}
 function sha256(bytes) {
   return (0, import_node_crypto.createHash)("sha256").update(bytes).digest("hex");
 }
@@ -128,13 +143,55 @@ function requireSourceFacts(generation, input) {
     requireFact(generation[field] != null, `producer generation ${input.preparedAt} missing ${field}`);
   }
 }
+function missingFact(generation, fact) {
+  return `producer generation ${generation.preparedAt} missing ${fact}`;
+}
+function generationCaptures(producer, generation) {
+  const [from, to] = [Date.parse(generation.preparedAt), Date.parse(String(generation.terminalAt))];
+  const prefix = String(generation.tokenPrefix || "");
+  return (producer.verificationCaptures ?? []).filter((capture) => [
+    capture.candidate.source === "git",
+    immutableCommit(capture.candidate.value),
+    String(capture.dispatchNonce).startsWith(prefix),
+    Date.parse(capture.completedAt) >= from,
+    Date.parse(capture.completedAt) <= to
+  ].every(Boolean)).sort((left, right) => Date.parse(left.completedAt) - Date.parse(right.completedAt));
+}
+function derivedBaseCommit(root, generation, captures, integrationCommit) {
+  if (generation.baseCommit) return { generation, derivedFacts: [] };
+  const first = captures[0];
+  requireFact(first !== void 0, `${missingFact(generation, "baseCommit")}; no verification capture in that generation records a git candidate to derive it from`);
+  const candidate = first.candidate.value;
+  const [baseCommit, ...otherBases] = gitLinesOrEmpty(root, ["merge-base", "--all", candidate, integrationCommit]);
+  requireFact(
+    baseCommit !== void 0 && otherBases.length === 0 && baseCommit !== candidate,
+    `${missingFact(generation, "baseCommit")}; derivation is ambiguous: capture ${first.id} candidate ${candidate} is already on integration commit ${integrationCommit || "(unknown)"} or shares no single merge base with it`
+  );
+  return { generation: { ...generation, baseCommit }, derivedFacts: [{ fact: "baseCommit", derivedFrom: [`capture:${first.id}`], integrationCommit }] };
+}
+function derivedSanctionedCommits(root, derived, captures) {
+  const { generation } = derived;
+  if (generation.sanctionedCommits || generation.outcome !== "released") return derived;
+  const owners = captures.filter((capture) => gitSucceeds(root, ["merge-base", "--is-ancestor", generation.baseCommit, capture.candidate.value]));
+  requireFact(owners.length > 0, `${missingFact(generation, "sanctionedCommits")}; no verification capture in that generation records a git candidate descending from baseCommit ${generation.baseCommit}`);
+  const sanctionedCommits = [...new Set(owners.flatMap((capture) => gitLinesOrEmpty(root, ["rev-list", "--reverse", `${generation.baseCommit}..${capture.candidate.value}`])))];
+  return {
+    generation: { ...generation, sanctionedCommits },
+    derivedFacts: [...derived.derivedFacts, { fact: "sanctionedCommits", derivedFrom: owners.map((capture) => `capture:${capture.id}`) }]
+  };
+}
+function derivedGeneration(root, producer, generation, input, integrationCommit) {
+  const captures = generationCaptures(producer, generation);
+  const derived = derivedSanctionedCommits(root, derivedBaseCommit(root, generation, captures, integrationCommit), captures);
+  requireSourceFacts(derived.generation, input);
+  return derived;
+}
 function sourceGeneration(producer, input) {
   const dispatch = producer.dispatch;
   requireFact(dispatch !== void 0, "producer has no native generation");
   const { attempts = [] } = dispatch;
   const generation = [dispatch, ...attempts.slice().reverse()].find((candidate) => candidate.preparedAt === input.preparedAt);
   requireFact(generation !== void 0 && Boolean(generation.terminalAt), "producer generation mismatch");
-  requireSourceFacts(generation, input);
   requireFact(
     generation === dispatch || generation.outcome !== "submitted" || generation.commit === producer.submission?.commit,
     `historical submitted generation ${input.preparedAt} candidate ${generation.commit} differs from current submission ${producer.submission?.commit}`
@@ -151,13 +208,13 @@ function sourceOwnership(producer, generation, input, commits, owned) {
   requireFact(commits.every((commit) => owned.includes(commit)), "range includes work not owned by this producer");
   requireFact(generation.outcome !== "submitted" || producer.submission?.commit === input.commit, "submitted candidate mismatch");
 }
-function sourceCapture(producer, input) {
+function sourceCapture(producer, generation, input) {
   if (!input.captureId) return;
   const capture = producer.verificationCaptures?.find((candidate) => candidate.id === input.captureId);
   requireFact(capture !== void 0, "capture identity is unavailable");
   requireFact(capture.candidate.source === "git" && capture.candidate.value === input.commit, "capture source mismatch");
   requireFact(Boolean(capture.command.trim()) && Boolean(capture.dispatchNonce), "capture needs command and nonce identities");
-  compatibleSourceCapture(capture, sourceGeneration(producer, input));
+  compatibleSourceCapture(capture, generation);
   return capture;
 }
 function compatibleSourceCapture(capture, generation) {
@@ -166,10 +223,10 @@ function compatibleSourceCapture(capture, generation) {
   const completed = Date.parse(capture.completedAt);
   requireFact(completed >= Date.parse(generation.preparedAt) && completed <= Date.parse(String(generation.terminalAt)), "historical capture cannot be rebound to a different generation");
 }
-function observeSource(root, input, lookup, recordedTips) {
+function observeSource(root, input, lookup, integrationCommit, recordedTips) {
   const producer = lookup(input.ref);
   requireFact(producer !== null, "native producer is unavailable");
-  const generation = sourceGeneration(producer, input);
+  const { generation, derivedFacts } = derivedGeneration(root, producer, sourceGeneration(producer, input), input, integrationCommit);
   const owned = ownedCommits(producer, generation);
   const { authored, inheritedTips } = sourceRange(root, generation, input, owned, recordedTips);
   sourceOwnership(producer, generation, input, authored, owned);
@@ -182,10 +239,11 @@ function observeSource(root, input, lookup, recordedTips) {
     ...inheritedTips.length ? { inheritedTips } : {},
     status: generation.outcome === "submitted" ? "submitted-unaccepted" : "preparation-unaccepted",
     files: scope.paths.map((file) => committedFile(root, input.commit, file)),
-    capture: sourceCapture(producer, input)
+    capture: sourceCapture(producer, generation, input),
+    ...derivedFacts.length ? { derivedFacts } : {}
   };
 }
-function prepareWorkProvenance(root, declaration, sessionId, lookup) {
+function prepareWorkProvenance(root, declaration, sessionId, lookup, integrationCommit = "") {
   if (!declaration) return;
   return structuredClone({
     kind: declaration.kind,
@@ -194,7 +252,7 @@ function prepareWorkProvenance(root, declaration, sessionId, lookup) {
     execution: "UNVERIFIED",
     quality: "UNVERIFIED",
     admission: "UNVERIFIED",
-    sources: declaration.sources.map((input) => observeSource(root, input, lookup))
+    sources: declaration.sources.map((input) => observeSource(root, input, lookup, integrationCommit))
   });
 }
 function workingFile(root, file) {
@@ -202,7 +260,8 @@ function workingFile(root, file) {
   return { path: file.path, sha256: import_node_fs.default.existsSync(location) ? sha256(import_node_fs.default.readFileSync(location)) : null };
 }
 function unchangedSource(root, source, lookup) {
-  requireFact(JSON.stringify(source) === JSON.stringify(observeSource(root, source.input, lookup, source.inheritedTips ?? [])), "source generation or capture mutated");
+  const derivedBase = source.derivedFacts?.find((fact) => fact.fact === "baseCommit");
+  requireFact(JSON.stringify(source) === JSON.stringify(observeSource(root, source.input, lookup, derivedBase?.integrationCommit ?? "", source.inheritedTips ?? [])), "source generation or capture mutated");
   requireFact(source.files.every((file) => workingFile(root, file).sha256 === file.sha256), "source/test bytes are incompatible with frozen origin");
 }
 function ownedWorkPaths(root, provenance, paths, lookup) {
@@ -215,7 +274,8 @@ function ownedWorkPaths(root, provenance, paths, lookup) {
 }
 function provenanceAdmissionHold(provenance) {
   if (!provenance) return;
-  return { ok: false, reason: "work_provenance_unverified", message: "Frozen work provenance is a factual declaration only. Execution, quality and source admission remain UNVERIFIED; checkpoint and release preparation, never submit it as accepted work." };
+  const derived = provenance.sources.flatMap((source) => (source.derivedFacts ?? []).map((fact) => `${source.input.ref} ${source.input.preparedAt} ${fact.fact} from ${fact.derivedFrom.join(", ")}`));
+  return { ok: false, reason: "work_provenance_unverified", message: "Frozen work provenance is a factual declaration only. Execution, quality and source admission remain UNVERIFIED; checkpoint and release preparation, never submit it as accepted work." + (derived.length ? ` Derived producer facts, not recorded by their generation: ${derived.join("; ")}.` : "") };
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

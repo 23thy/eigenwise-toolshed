@@ -2212,14 +2212,19 @@ test('source provenance refuses a historical submitted candidate replaced by a l
   assert.equal(store.getTicket(slug, ticket.ref).dispatch, undefined);
 });
 
-test('source provenance names the missing fact and generation for legacy archived attempts', async () => {
+async function archivedProvenanceGeneration() {
   const origin = await nativeProvenanceProducer();
   await laterProvenanceGeneration(origin.ref);
   const producer = store.getTicket(slug, origin.ref);
   const archived = producer.dispatch.attempts.find((attempt: { preparedAt: string }) => attempt.preparedAt === origin.preparedAt);
+  return { origin, producer, archived };
+}
+
+test('source provenance names the missing fact and generation for legacy archived attempts', async () => {
+  const { origin, producer, archived } = await archivedProvenanceGeneration();
   const retained = structuredClone(archived);
   const ticket = provenanceTicket('source provenance legacy archive has no inferred facts');
-  for (const field of ['baseCommit', 'declaredFiles', 'sanctionedCommits', 'verificationRequirement', 'tokenPrefix']) {
+  for (const field of ['declaredFiles', 'verificationRequirement', 'tokenPrefix']) {
     Object.assign(archived, retained);
     delete archived[field];
     persist(producer);
@@ -2227,6 +2232,63 @@ test('source provenance names the missing fact and generation for legacy archive
       kind: 'inherited-read-only', sources: [origin] } }, { allowWorkProvenance: true }), { message: 'work provenance refused: producer generation ' + origin.preparedAt + ' missing ' + field });
     assert.equal(store.getTicket(slug, ticket.ref).dispatch, undefined);
   }
+});
+
+test('source provenance derives missing sanctionedCommits from the archived generation capture and says so at admission', async () => {
+  const { origin, producer, archived } = await archivedProvenanceGeneration();
+  delete archived.sanctionedCommits;
+  persist(producer);
+  const ticket = provenanceTicket('source provenance derived sanctioned commits');
+  store.prepareDispatch(slug, ticket.ref, { sharedTree: true, sessionId: 'derived-origin-main', workProvenance: {
+    kind: 'inherited-read-only', sources: [origin] } }, { allowWorkProvenance: true });
+  const provenance = store.getTicket(slug, ticket.ref).dispatch.workProvenance;
+  assert.deepEqual(provenance.sources[0].generation.sanctionedCommits, [origin.commit]);
+  assert.deepEqual(provenance.sources[0].derivedFacts, [{ fact: 'sanctionedCommits', derivedFrom: ['capture:' + origin.captureId] }]);
+  assert.equal(store.getTicket(slug, origin.ref).dispatch.attempts.find((attempt: { preparedAt: string }) => attempt.preparedAt === origin.preparedAt).sanctionedCommits, undefined, 'derivation never rewrites the producer generation');
+  assert.match(require('../lib/store/work-provenance.js').provenanceAdmissionHold(provenance).message,
+    new RegExp('Derived producer facts, not recorded by their generation: ' + origin.ref + ' ' + origin.preparedAt.replace(/\./g, '\\.') + ' sanctionedCommits from capture:' + origin.captureId));
+});
+
+test('source provenance refuses a missing baseCommit by name when its capture candidate is already on the integration branch', async () => {
+  const { origin, producer, archived } = await archivedProvenanceGeneration();
+  delete archived.baseCommit;
+  persist(producer);
+  const ticket = provenanceTicket('source provenance ambiguous derived base');
+  assert.throws(() => store.prepareDispatch(slug, ticket.ref, { sharedTree: true, sessionId: 'ambiguous-origin-main', workProvenance: {
+    kind: 'inherited-read-only', sources: [origin] } }, { allowWorkProvenance: true }),
+  { message: 'work provenance refused: producer generation ' + origin.preparedAt + ' missing baseCommit; derivation is ambiguous: capture ' + origin.captureId
+    + ' candidate ' + origin.commit + ' is already on integration commit ' + git(['rev-parse', 'HEAD']) + ' or shares no single merge base with it' });
+  assert.equal(store.getTicket(slug, ticket.ref).dispatch, undefined);
+});
+
+test('a released isolated generation records the raw-git commits its checkout made as sanctionedCommits', () => {
+  const ticket = addRouted('raw git commits in an isolated checkout');
+  const session = 'session-raw-git-sanctioned';
+  const agent = 'raw-git-sanctioned-agent';
+  const prepared = store.prepareDispatch(slug, ticket.ref, { sharedTree: false, sessionId: session });
+  assert.equal(store.recordDispatchLaunch(slug, ticket.ref, {
+    token: prepared.token, executor: prepared.ticket.dispatchExecutor, sessionId: session, agentName: agent,
+  }).ok, true);
+  const worktree = worktrees.agentWorktreePath(PROJECT_DIR, agent);
+  assert.equal(store.bindDispatchWorktreeCreation(slug, session, worktree).ok, true);
+  git(['worktree', 'add', '--detach', worktree]);
+  const gitDirectory = path.resolve(worktree, execFileSync('git', ['rev-parse', '--git-dir'], { cwd: worktree, encoding: 'utf8', windowsHide: true }).trim());
+  require('../lib/kernel/worktree.js').createCheckoutInstanceMarker(gitDirectory);
+  assert.equal(store.completeDispatchWorktreeCreation(slug, session, worktree, require('./_creation-generation.js').creationGeneration(slug, session, worktree)).ok, true);
+  assert.equal(store.bindDispatchAgent(session, prepared.ticket.dispatchExecutor, agent, agent, worktree).ok, true);
+  assert.equal(store.claimTicket(slug, ticket.ref, 'raw-git-executor', {
+    token: prepared.token, executor: prepared.ticket.dispatchExecutor, sessionId: session,
+  }).ok, true);
+  fs.mkdirSync(path.join(worktree, 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(worktree, 'lib', 'fixture.js'), 'module.exports = "raw git";\n');
+  execFileSync('git', ['add', 'lib/fixture.js'], { cwd: worktree, windowsHide: true });
+  execFileSync('git', ['commit', '-m', 'Raw git fixture commit'], { cwd: worktree, windowsHide: true });
+  const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8', windowsHide: true }).trim();
+  assert.equal(store.getTicket(slug, ticket.ref).dispatch.sanctionedCommits, undefined, 'the board commit tool never saw this commit');
+  assert.equal(store.releaseTicket(slug, ticket.ref, 'raw-git-executor', { status: 'todo', kind: 'handback', reason: 'Raw git fixture generation', source: 'mcp' }).ok, true);
+  const released = store.getTicket(slug, ticket.ref).dispatch;
+  assert.equal(released.terminalWorktreeRevision, commit);
+  assert.deepEqual(released.sanctionedCommits, [commit]);
 });
 
 test('source provenance refuses changed source/test bytes and changed native producer generations', async () => {
