@@ -5896,8 +5896,6 @@ test('read-only shell guard: refuses write-shaped Bash and PowerShell inside the
     'cd sub && touch f',
     `cp "${scratch}/x" ./y`,
     "sed -i 's/a/b/' a.txt",
-    'git commit -m x',
-    'git -C . reset --hard',
     'echo x | tee sub/log.txt',
     `echo x > "${path.join(root, 'quoted path.txt')}"`,
     ...(process.platform === 'win32' ? [`echo x > ${msysPath(path.join(root, 'msys.txt'))}`] : []),
@@ -5905,8 +5903,8 @@ test('read-only shell guard: refuses write-shaped Bash and PowerShell inside the
   for (const command of writes) {
     const reason = runReadOnlyShell(command, root)?.hookSpecificOutput?.permissionDecisionReason || '';
     assert.match(reason, /read-only executor, refusing a shell write inside the repository checkout/, command);
-    assert.match(reason, /in your scratchpad or the ticket's verification directory/, command);
-    assert.match(reason, /comment the needed edit on the ticket and release it instead/, command);
+    assert.match(reason, /Use scratch files outside the checkout, under/, command);
+    assert.match(reason, /comment the needed change and release the ticket/, command);
   }
   const powershell = runReadOnlyShell('Set-Content -Path a.txt -Value x', root, stableReadOnlyDispatchName(), 'PowerShell');
   assert.equal(powershell.hookSpecificOutput.permissionDecision, 'deny');
@@ -5963,9 +5961,44 @@ test('read-only shell guard: a content cmdlet writes only its path, so fixture t
   ]) {
     const reason = runPowerShell(command)?.hookSpecificOutput?.permissionDecisionReason || '';
     assert.match(reason, /read-only executor, refusing a shell write inside the repository checkout/, command);
-    assert.match(reason, /Writes under the ticket's verification directory .* are permitted whatever the file says; move the fixture there/, command);
+    assert.match(reason, /Use scratch files outside the checkout, under/, command);
   }
   assert.equal(runReadOnlyShell('git checkout main', root)?.hookSpecificOutput?.permissionDecision, 'deny');
+});
+
+test('read-only shell guard: inline programs and PowerShell literal text do not expose pseudo-paths', () => {
+  const root = readOnlyShellCheckout();
+  for (const command of [
+    'node -e "console.log(\'@\', \'directory\', \'utf8\', \'echo > notes.txt\')"',
+    'python -c "print(\'@\', \'directory\', \'utf8\', \'echo > notes.txt\')"',
+    'Write-Output "a `" > notes.txt `" b"',
+    'Write-Output @"\necho > notes.txt\n"@',
+    "Write-Output @'\necho > notes.txt\n'@",
+  ]) {
+    assert.equal(runReadOnlyShell(command, root), null, command);
+  }
+  assert.equal(runReadOnlyShell('node -e "console.log(1)" > notes.txt', root)?.hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('read-only shell guard: content option values are not scratch write targets', () => {
+  const root = readOnlyShellCheckout();
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-readonly-scratch-'));
+  for (const command of [
+    `"fixture" | Out-File -Encoding utf8 "${scratch}/out.log"`,
+    `New-Item -ItemType Directory "${scratch}/directory"`,
+    `Set-Content -Encoding utf8 "${scratch}/out.log" -Value '@'`,
+  ]) {
+    assert.equal(runReadOnlyShell(command, root, stableReadOnlyDispatchName(), 'PowerShell'), null, command);
+  }
+  assert.equal(runReadOnlyShell('New-Item -ItemType Directory sub', root)?.hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('read-only shell guard: git mutations are refused even outside the checkout', () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-readonly-git-'));
+  for (const command of ['git commit -m x', 'git -C . reset --hard', 'git.exe stash']) {
+    assert.equal(runReadOnlyShell(command, scratch)?.hookSpecificOutput.permissionDecision, 'deny', command);
+  }
+  assert.equal(runReadOnlyShell('git status', scratch), null);
 });
 
 test('read-only executors never ship or spawn with bypassPermissions (GH-282)', () => {
