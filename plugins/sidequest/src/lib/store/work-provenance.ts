@@ -22,7 +22,7 @@ export type ProvenanceProducer = Readonly<{
 }>;
 type FileIdentity = Readonly<{ path: string; sha256: string | null }>;
 export type SourceOrigin = Readonly<{
-  input: SourceOriginInput; producerId: string; generation: ProducerDispatch;
+  input: SourceOriginInput; producerId: string; generation: ProducerDispatch; inheritedTips?: readonly string[];
   status: 'submitted-unaccepted' | 'preparation-unaccepted';
   files: readonly FileIdentity[]; capture?: CompletedVerificationCapture;
 }>;
@@ -64,8 +64,11 @@ export function authorizeWorkDeclaration(value: unknown, sessionId: unknown, gra
   requireFact(granted && text(sessionId), 'main-thread MCP grant and runtime session required; actor labels grant nothing');
   requireFact(!active, 'late declaration cannot change an existing prepared or executing generation');
 }
-function git(root: string, argumentsList: readonly string[]): Buffer {
-  return execFileSync('git', argumentsList, { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+function git(root: string, argumentsList: readonly string[], input?: string): Buffer {
+  return execFileSync('git', argumentsList, { cwd: root, windowsHide: true, input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
+}
+function gitLines(root: string, argumentsList: readonly string[], input?: string): string[] {
+  return git(root, argumentsList, input).toString().trim().split(/\r?\n/).filter(Boolean);
 }
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -74,10 +77,26 @@ function committedFile(root: string, commit: string, file: string): FileIdentity
   const exists = git(root, ['ls-tree', '--name-only', commit, '--', file]).toString().trim();
   return { path: file, sha256: exists ? sha256(git(root, ['show', `${commit}:${file}`])) : null };
 }
-function sourceCommits(root: string, generation: ProducerDispatch, input: SourceOriginInput): string[] {
+// A branch holding none of this generation's commits was merged in whole, like the trial branch a producer
+// fast-forwards as its authorized first step (SQ-3674), so that history is inherited, never authored here.
+function wholeInheritedBranchTips(root: string, baseCommit: string, ownedInRange: readonly string[]): string[] {
+  return gitLines(root, ['for-each-ref', '--format=%(objectname)', '--no-merged', baseCommit,
+    ...ownedInRange.flatMap(commit => ['--no-contains', commit]), 'refs/heads', 'refs/remotes']);
+}
+type SourceRange = Readonly<{ authored: string[]; inheritedTips: string[] }>;
+function sourceRange(root: string, generation: ProducerDispatch, input: SourceOriginInput, owned: readonly string[], recordedTips?: readonly string[]): SourceRange {
   requireFact(immutableCommit(generation.baseCommit), 'producer needs an immutable native base');
   git(root, ['merge-base', '--is-ancestor', generation.baseCommit, input.commit]);
-  return git(root, ['rev-list', '--reverse', `${generation.baseCommit}..${input.commit}`]).toString().trim().split(/\r?\n/).filter(Boolean);
+  const range = gitLines(root, ['rev-list', '--reverse', '--parents', `${generation.baseCommit}..${input.commit}`]).map(line => {
+    const [commit = '', ...parents] = line.split(' ');
+    return { commit, parents };
+  });
+  const commits = range.map(entry => entry.commit);
+  const exclusions = recordedTips ?? wholeInheritedBranchTips(root, generation.baseCommit, commits.filter(commit => owned.includes(commit)));
+  const authored = new Set(gitLines(root, ['rev-list', '--stdin'], [input.commit, `^${generation.baseCommit}`, ...exclusions.map(tip => `^${tip}`), ''].join('\n')));
+  const inherited = range.filter(entry => !authored.has(entry.commit));
+  return { authored: commits.filter(commit => authored.has(commit)),
+    inheritedTips: inherited.filter(entry => !inherited.some(other => other.parents.includes(entry.commit))).map(entry => entry.commit) };
 }
 function requireSourceFacts(generation: ProducerDispatch, input: SourceOriginInput): void {
   const fields: readonly (keyof ProducerDispatch)[] = ['baseCommit', 'declaredFiles',
@@ -100,10 +119,12 @@ function sourceGeneration(producer: ProvenanceProducer, input: SourceOriginInput
   requireFact(['released', 'submitted'].includes(generation.outcome), 'producer must be released preparation or submitted source');
   return generation;
 }
-function sourceOwnership(producer: ProvenanceProducer, generation: ProducerDispatch, input: SourceOriginInput, commits: readonly string[]): void {
-  const owned = generation.outcome === 'submitted' ? producer.submission?.commits : generation.sanctionedCommits;
-  requireFact(Boolean(owned?.includes(input.commit)) && commits.length > 0, 'commit lacks native producer ownership');
-  requireFact(commits.every(commit => owned?.includes(commit) === true), 'range includes work not owned by this producer');
+function ownedCommits(producer: ProvenanceProducer, generation: ProducerDispatch): readonly string[] {
+  return (generation.outcome === 'submitted' ? producer.submission?.commits : generation.sanctionedCommits) ?? [];
+}
+function sourceOwnership(producer: ProvenanceProducer, generation: ProducerDispatch, input: SourceOriginInput, commits: readonly string[], owned: readonly string[]): void {
+  requireFact(owned.includes(input.commit) && commits.length > 0, 'commit lacks native producer ownership');
+  requireFact(commits.every(commit => owned.includes(commit)), 'range includes work not owned by this producer');
   requireFact(generation.outcome !== 'submitted' || producer.submission?.commit === input.commit, 'submitted candidate mismatch');
 }
 function sourceCapture(producer: ProvenanceProducer, input: SourceOriginInput): CompletedVerificationCapture | undefined {
@@ -121,15 +142,16 @@ function compatibleSourceCapture(capture: CompletedVerificationCapture, generati
   const completed = Date.parse(capture.completedAt);
   requireFact(completed >= Date.parse(generation.preparedAt) && completed <= Date.parse(String(generation.terminalAt)), 'historical capture cannot be rebound to a different generation');
 }
-function observeSource(root: string, input: SourceOriginInput, lookup: ProducerLookup): SourceOrigin {
+function observeSource(root: string, input: SourceOriginInput, lookup: ProducerLookup, recordedTips?: readonly string[]): SourceOrigin {
   const producer = lookup(input.ref);
   requireFact(producer !== null, 'native producer is unavailable');
   const generation = sourceGeneration(producer, input);
-  const commits = sourceCommits(root, generation, input);
-  sourceOwnership(producer, generation, input, commits);
-  const scope = validateCommitRangeScope(root, commits, ticketCommitScope(generation.declaredFiles, generation.declaredFiles, producer.ref));
+  const owned = ownedCommits(producer, generation);
+  const { authored, inheritedTips } = sourceRange(root, generation, input, owned, recordedTips);
+  sourceOwnership(producer, generation, input, authored, owned);
+  const scope = validateCommitRangeScope(root, authored, ticketCommitScope(generation.declaredFiles, generation.declaredFiles, producer.ref));
   requireFact(scope.ok, 'source range escapes native declared scope');
-  return { input, producerId: producer.id, generation, status: generation.outcome === 'submitted' ? 'submitted-unaccepted' : 'preparation-unaccepted',
+  return { input, producerId: producer.id, generation, ...(inheritedTips.length ? { inheritedTips } : {}), status: generation.outcome === 'submitted' ? 'submitted-unaccepted' : 'preparation-unaccepted',
     files: scope.paths.map(file => committedFile(root, input.commit, file)), capture: sourceCapture(producer, input) };
 }
 export function prepareWorkProvenance(root: string, declaration: WorkDeclaration | undefined, sessionId: string, lookup: ProducerLookup): WorkProvenance | undefined {
@@ -143,7 +165,7 @@ function workingFile(root: string, file: FileIdentity): FileIdentity {
   return { path: file.path, sha256: fs.existsSync(location) ? sha256(fs.readFileSync(location)) : null };
 }
 function unchangedSource(root: string, source: SourceOrigin, lookup: ProducerLookup): void {
-  requireFact(JSON.stringify(source) === JSON.stringify(observeSource(root, source.input, lookup)), 'source generation or capture mutated');
+  requireFact(JSON.stringify(source) === JSON.stringify(observeSource(root, source.input, lookup, source.inheritedTips ?? [])), 'source generation or capture mutated');
   requireFact(source.files.every(file => workingFile(root, file).sha256 === file.sha256), 'source/test bytes are incompatible with frozen origin');
 }
 export function ownedWorkPaths(root: string, provenance: WorkProvenance | undefined, paths: readonly string[], lookup: ProducerLookup): string[] {

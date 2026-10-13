@@ -1752,6 +1752,58 @@ test('source provenance matches an archived released generation by its own prepa
   releaseProvenance(ticket);
 });
 
+function commitFixtureFile(file: string, body: string, message: string) {
+  fs.writeFileSync(path.join(PROJECT_DIR, file), body);
+  git(['add', file]);
+  git(['commit', '-m', message]);
+}
+
+async function producerInheritingTrialBranch(foreignAfterInheritedTip: boolean) {
+  const producer = provenanceTicket('source provenance producer fast-forwards a trial branch first');
+  claimRouted(producer, producer.ref + '-producer');
+  const trial = 'trial-' + producer.ref.toLowerCase();
+  const checkedOut = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+  git(['checkout', '-b', trial]);
+  commitFixtureFile('lib/trial.js', `module.exports = '${producer.ref} one';\n`, 'Inherited trial step one');
+  commitFixtureFile('lib/trial.js', `module.exports = '${producer.ref} two';\n`, 'Inherited trial step two');
+  git(['checkout', checkedOut]);
+  git(['merge', '--ff-only', trial]);
+  const inheritedTip = git(['rev-parse', trial]);
+  if (foreignAfterInheritedTip) commitFixtureFile('lib/foreign.js', `module.exports = '${producer.ref}';\n`, 'Unsanctioned raw commit');
+  fs.writeFileSync(path.join(PROJECT_DIR, provenanceFiles[0]), `module.exports = [2, '${producer.ref}'][0];\n`);
+  fs.writeFileSync(path.join(PROJECT_DIR, provenanceFiles[1]), "const test = require('node:test'); const assert = require('node:assert/strict'); test('owned value equals two', () => assert.equal(require('../lib/provenance'), 2));\n");
+  const committed = await provenanceBoardTool('commit', { ref: producer.ref, by: producer.ref + '-producer', worktree: PROJECT_DIR, message: 'Sanctioned work after the inherited trial branch' });
+  assert.equal(committed.ok, true, JSON.stringify(committed));
+  const candidate = git(['rev-parse', 'HEAD']);
+  assert.equal(store.releaseTicket(slug, producer.ref, producer.ref + '-producer', { status: 'todo', kind: 'handback', reason: 'Synthetic inherited preparation', source: 'mcp' }).ok, true);
+  // The shared trial branch keeps moving after the producer merged it, so ownership must not need its current tip.
+  git(['branch', '-f', trial, git(['commit-tree', inheritedTip + '^{tree}', '-p', inheritedTip, '-m', 'Trial branch advanced later'])]);
+  return { origin: { ref: producer.ref, preparedAt: store.getTicket(slug, producer.ref).dispatch.preparedAt, commit: candidate }, inheritedTip, trial };
+}
+
+test('source provenance judges only commits authored after a fast-forwarded trial branch', async () => {
+  const { origin, inheritedTip, trial } = await producerInheritingTrialBranch(false);
+  const ticket = await claimProvenance(provenanceTicket('source provenance inherits a whole trial branch'), 'inherited-read-only', [origin]);
+  const source = ticket.dispatch.workProvenance.sources[0];
+  assert.deepEqual(source.inheritedTips, [inheritedTip]);
+  const sourcePaths = source.files.map((file: { path: string }) => file.path);
+  assert.ok(sourcePaths.includes(provenanceFiles[0]) && !sourcePaths.includes('lib/trial.js'), JSON.stringify(sourcePaths));
+  git(['branch', '-f', trial, git(['commit-tree', inheritedTip + '^{tree}', '-p', inheritedTip, '-m', 'Trial branch advanced again'])]);
+  const workProvenance = require('../lib/store/work-provenance.js');
+  assert.deepEqual(workProvenance.ownedWorkPaths(PROJECT_DIR, ticket.dispatch.workProvenance, [provenanceFiles[0]],
+    (ref: string) => store.getTicket(slug, ref)), []);
+  releaseProvenance(ticket);
+});
+
+test('source provenance still refuses a foreign commit after the inherited trial branch tip', async () => {
+  const { origin } = await producerInheritingTrialBranch(true);
+  const ticket = provenanceTicket('source provenance foreign work after inherited tip');
+  assert.throws(() => store.prepareDispatch(slug, ticket.ref, { sharedTree: true, sessionId: 'inherited-foreign-main', workProvenance: {
+    kind: 'inherited-read-only', sources: [origin] } }, { allowWorkProvenance: true }),
+  { message: 'work provenance refused: range includes work not owned by this producer' });
+  assert.equal(store.getTicket(slug, ticket.ref).dispatch, undefined);
+});
+
 test('source provenance never uses latest generation ownership for an earlier preparedAt', async () => {
   const origin = await nativeProvenanceProducer();
   const latestCommit = await laterProvenanceGeneration(origin.ref);
