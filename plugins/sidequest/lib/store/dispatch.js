@@ -1802,8 +1802,8 @@ function createDispatch(dependencies) {
     return current?.outcome === "released" && Array.isArray(current.declaredFiles) && current.declaredFiles.length ? current.declaredFiles.filter((file) => file !== WHOLE_TREE_SCOPE) : null;
   }
   function dispatchEffectiveFiles(slug, t, current) {
-    const releasedBinding = releasedDeclaredBinding(current);
-    return releasedBinding ? Array.from(/* @__PURE__ */ new Set([...releasedBinding, ...effectiveScope(slug, t)])) : effectiveScope(slug, t);
+    const releasedBinding2 = releasedDeclaredBinding(current);
+    return releasedBinding2 ? Array.from(/* @__PURE__ */ new Set([...releasedBinding2, ...effectiveScope(slug, t)])) : effectiveScope(slug, t);
   }
   function wholeTreeScopeOverride(t, opts, readonly) {
     return !readonly && opts.allowUnscoped === true && !normalizeFiles(t.files).length;
@@ -2625,7 +2625,10 @@ function createDispatch(dependencies) {
     return Boolean(state && state.sessionId === sessionId && state.sharedTree === false && state.outcome === "launched" && !state.terminalAt);
   }
   function holdsNoCheckout(state) {
-    return !state.worktree && !state.continuation?.sourceWorktree && state.worktreeBindingExchange?.reason !== "worktree_create_failed";
+    return !state.worktree && !state.continuation?.sourceWorktree && !releasedBinding(state);
+  }
+  function releasedBinding(state) {
+    return ["worktree_create_failed", "claim_took_released_binding"].includes(state?.worktreeBindingExchange?.reason);
   }
   function dispatchCreationCandidate(state, sessionId) {
     return launchedIsolatedReservation(state, sessionId) && holdsNoCheckout(state);
@@ -3680,7 +3683,7 @@ function createDispatch(dependencies) {
     return unclaimedLaunchedReservation(ticket, state, sessionId) && !state.claimedAt && state.sharedTree === false && !state.worktree && !state.continuation?.sourceWorktree;
   }
   function releasedCheckoutReservation(ticket, state, sessionId) {
-    return checkoutlessReservation(ticket, state, sessionId) && state.worktreeBindingExchange?.reason === "worktree_create_failed";
+    return checkoutlessReservation(ticket, state, sessionId) && releasedBinding(state);
   }
   function leasesAnotherCheckout(ticket, state, claim) {
     return crossedClaimCheckoutReservation(ticket, state, claim.sessionId) && canonicalPath(state.worktree) !== claim.observed;
@@ -3726,7 +3729,7 @@ function createDispatch(dependencies) {
     const from = recordedCheckout(currentState);
     exchangeCheckoutRecords(currentState, holderState);
     currentState.worktreeBindingExchange = { at: now, from, with: currentHolder.ref, reason: "claim_token" };
-    holderState.worktreeBindingExchange = { at: now, from: exchange.observed, with: current.ref, reason: "claim_token" };
+    holderState.worktreeBindingExchange = { at: now, from: exchange.observed, with: current.ref, reason: from ? "claim_token" : "claim_took_released_binding" };
     stampDispatchEvent(current, "claim-worktree-exchange", now);
     stampDispatchEvent(currentHolder, "claim-worktree-exchange", now);
     putTicket(exchange.slug, current);

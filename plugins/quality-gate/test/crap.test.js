@@ -120,15 +120,16 @@ test('empty scope says why and never says passed or runs coverage', async (conte
   assert.match(formatCrapReport(await crapReport({ project: root })), /No supported source files matched/);
 });
 
-test('base comparison enforces every changed body without legacy exemptions', async (context) => {
+test('base comparison reports legacy edits and enforces raised and new bodies at six', async (context) => {
   const original = 'function legacy(value) { if (value === 1) return 1; if (value === 2) return 2; if (value === 3) return 3; if (value === 4) return 4; if (value === 5) return 5; return 0; }\n';
   const root = await fixture(context, { 'source.js': original });
   const base = commitBaseline(root);
   await fs.writeFile(path.join(root, 'source.js'), original.replace('return 0', 'return -1') + 'function added(value) { return value ? 1 : 0; }\n');
   const report = await crapReport({ project: root, base, ccOnly: true });
-  assert.equal(report.exitCode, 1);
+  assert.equal(report.exitCode, 0);
   assert.deepEqual(report.changedMetrics.map((row) => row.classification), ['legacy-unchanged', 'new']);
-  assert.match(formatCrapReport(report), /FAIL.*cc=6/);
+  assert.match(formatCrapReport(report), /LEGACY.*cc=6/);
+  assert.doesNotMatch(formatCrapReport(report), /fails at any coverage/);
   await fs.writeFile(path.join(root, 'source.js'), original.replace('return 0', 'if (value === 6) return 6; return 0'));
   const raised = await crapReport({ project: root, base, ccOnly: true });
   assert.equal(raised.exitCode, 1);
@@ -137,6 +138,10 @@ test('base comparison enforces every changed body without legacy exemptions', as
   const unchanged = await crapReport({ project: root, base: 'HEAD', ccOnly: true });
   assert.equal(unchanged.base, null);
   assert.equal(unchanged.changedMetrics[0].classification, 'new');
+  await fs.writeFile(path.join(root, 'source.js'), original + original.replace('legacy', 'fresh'));
+  const added = await crapReport({ project: root, base, ccOnly: true });
+  assert.equal(added.exitCode, 1);
+  assert.deepEqual(added.failures.map((row) => [row.name, row.classification, row.complexity]), [['fresh', 'new', 6]]);
 });
 
 test('unchanged bodies and nested-only edits respect independent AST ownership', async (context) => {

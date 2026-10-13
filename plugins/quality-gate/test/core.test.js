@@ -125,14 +125,14 @@ test('a function absent at base is new and enforced', async () => {
   assert.deepEqual(verdict, { failures: [], unverified: [] });
 });
 
-test('an equal-complexity legacy edit keeps its classification and fails or stays unverified', async () => {
+test('an equal-complexity legacy edit is informational even without coverage', async () => {
   const passThrough = legacyAtBase.replace('total += 1', 'total += 10');
   const scored = await classifiedAgainstLegacyBase(passThrough, { coverage: 0 });
   assert.deepEqual(scored.byName, { legacy: 'legacy-unchanged' });
-  assert.equal(scored.verdict.failures.length, 1);
+  assert.deepEqual(scored.verdict, { failures: [], unverified: [] });
   const unmeasured = await classifiedAgainstLegacyBase(passThrough, { unverified: 'no suite loaded this file' });
   assert.deepEqual(unmeasured.byName, { legacy: 'legacy-unchanged' });
-  assert.equal(unmeasured.verdict.unverified.length, 1);
+  assert.deepEqual(unmeasured.verdict, { failures: [], unverified: [] });
 });
 
 test('a legacy function that gains a branch is modified-raised and fails at or above six', async () => {
@@ -141,10 +141,10 @@ test('a legacy function that gains a branch is modified-raised and fails at or a
   assert.deepEqual(verdict.failures, ['legacy.mjs:1 legacy cc=8 coverage=100.00% CRAP=8.0000']);
 });
 
-test('a new helper cannot exempt its physically modified legacy caller', async () => {
+test('a new helper is enforced while its equal-complexity legacy caller is informational', async () => {
   const { byName, verdict } = await classifiedAgainstLegacyBase(`function bonus(item) {\n  return item.f ? 6 : 0;\n}\n${legacyAtBase.replace('  }\n  return', '    total += bonus(item);\n  }\n  return')}`);
   assert.deepEqual(byName, { bonus: 'new', legacy: 'legacy-unchanged' });
-  assert.deepEqual(verdict.failures, ['legacy.mjs:4 legacy cc=7 coverage=100.00% CRAP=7.0000']);
+  assert.deepEqual(verdict.failures, []);
 });
 
 test('unbound named build records never establish source ownership', () => {

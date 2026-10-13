@@ -3276,7 +3276,13 @@ function launchedIsolatedReservation(state?: any, sessionId?: any) {
 // A reservation a failed sibling creation released is held for the claim that proves whose it was; letting a later
 // hook rebind it left the last sibling of the message with no record and nothing to trade at claim (GH-406).
 function holdsNoCheckout(state: any) {
-  return !state.worktree && !state.continuation?.sourceWorktree && state.worktreeBindingExchange?.reason !== 'worktree_create_failed';
+  return !state.worktree && !state.continuation?.sourceWorktree && !releasedBinding(state);
+}
+
+// A binding a pre-creation failure released, or one a released reservation's claim then took in trade: the record is
+// empty while its executor runs in a checkout some sibling's record still names, so its own claim must be able to trade.
+function releasedBinding(state?: any) {
+  return ['worktree_create_failed', 'claim_took_released_binding'].includes(state?.worktreeBindingExchange?.reason);
 }
 
 function dispatchCreationCandidate(state?: any, sessionId?: any) {
@@ -4658,7 +4664,7 @@ function checkoutlessReservation(ticket?: any, state?: any, sessionId?: any) {
 // held one is the one-sided crossing its holder's agent report settles (GH-235), and trading it at claim time emptied
 // the holder's record that the SQ-3132 retry route reads to keep the claimed sibling's tree (GH-305, SQ-3147).
 function releasedCheckoutReservation(ticket?: any, state?: any, sessionId?: any) {
-  return checkoutlessReservation(ticket, state, sessionId) && state.worktreeBindingExchange?.reason === 'worktree_create_failed';
+  return checkoutlessReservation(ticket, state, sessionId) && releasedBinding(state);
 }
 
 function leasesAnotherCheckout(ticket?: any, state?: any, claim?: any) {
@@ -4719,7 +4725,7 @@ function applyCrossedCheckoutExchange(exchange: any, admitted?: ClaimAdmission) 
   const from = recordedCheckout(currentState);
   exchangeCheckoutRecords(currentState, holderState);
   currentState.worktreeBindingExchange = { at: now, from, with: currentHolder.ref, reason: 'claim_token' };
-  holderState.worktreeBindingExchange = { at: now, from: exchange.observed, with: current.ref, reason: 'claim_token' };
+  holderState.worktreeBindingExchange = { at: now, from: exchange.observed, with: current.ref, reason: from ? 'claim_token' : 'claim_took_released_binding' };
   stampDispatchEvent(current, 'claim-worktree-exchange', now);
   stampDispatchEvent(currentHolder, 'claim-worktree-exchange', now);
   putTicket(exchange.slug, current);

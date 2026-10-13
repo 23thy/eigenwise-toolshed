@@ -906,6 +906,17 @@ function integrationTargetBehindLandedCandidate(ticket: any, target: any, eviden
   };
 }
 
+function canReconcileExpectedUpstream(repo: string, submission: { base: string; commit: string }, currentUpstream: string, deliveryMethod?: string) {
+  return commitIsAncestor(repo, submission.base, currentUpstream)
+    || (workingTreeDeliveryMethod(deliveryMethod) && !commitIsAncestor(repo, submission.commit, currentUpstream));
+}
+
+function missingSubmissionBaseDependency(slug: string, repo: string, base: string, currentUpstream: string) {
+  const missing = new Set(integrationGit(repo, ['rev-list', base, '--not', currentUpstream]).split(/\r?\n/));
+  const dependencies = listTickets(slug).filter((ticket: { submission?: { commit?: string } }) => missing.has(String(ticket.submission?.commit)));
+  return dependencies.map((ticket: { ref: string; submission: { commit: string } }) => `${ticket.ref} (${ticket.submission.commit})`).join(', ') || base;
+}
+
 function validateIntegrationSubmission(slug?: any, idOrRef?: any, opts?: any) {
   const ticket = getTicket(slug, idOrRef);
   if (!ticket) return { ok: false, reason: 'not_found' };
@@ -996,41 +1007,21 @@ function validateIntegrationSubmission(slug?: any, idOrRef?: any, opts?: any) {
   if (!scopeValidation.ok && opts?.deliveryInteractionCommit && scopeValidation.reason === 'reconciled_path_diverged') {
     scopeValidation = Object.assign({}, scopeValidation, { ok: true, reviewedMergedTreeInteraction: true });
   }
-  // The divergence refusal below prescribes exactly this recovery — re-apply the
-  // verified candidate by hand, re-gate it, record it with groomClose and deliveryCommit
-  // — and then refused it, leaving a shipped candidate closable only as abandoned
-  // (SQ-23, GH-233). The expected-upstream ancestry assertion protects the merge
-  // integrate performs, not this record: a reset, working-tree or manual delivery still
-  // has to name the immutable pinned candidate and prove that content is present, and
-  // re-validating rather than waiving keeps every other range and admitted scope
-  // invariant in force. The waiver itself only opens when the pinned candidate is not
-  // reachable from the current upstream — the same non-reachability recordDeliveredSubmission
-  // requires before it treats a delivery as pinned-working-tree — so naming a method
-  // alone never excuses an ordinary reachable delivery from the recorded expected
-  // upstream.
-  if (!scopeValidation.ok && scopeValidation.reason === 'expected_upstream_diverged' && workingTreeDeliveryMethod(opts?.deliveryMethod)) {
-    let candidateReachable = true;
-    try {
-      integrationGit(project?.path, ['merge-base', '--is-ancestor', ticket.submission.commit, scopeValidation.currentUpstream]);
-    } catch (error: any) {
-      if (error?.status === 1) candidateReachable = false;
-      else throw error;
-    }
-    if (!candidateReachable) {
-      scopeValidation = commitScope.validateStoredSubmissionRange(project?.path, ticket.submission, ticket.ref, integrationRefs, { allowDivergedExpectedUpstream: true });
-    }
+  if (!scopeValidation.ok && scopeValidation.reason === 'expected_upstream_diverged' && canReconcileExpectedUpstream(project?.path, ticket.submission, scopeValidation.currentUpstream, opts?.deliveryMethod)) {
+    scopeValidation = commitScope.validateStoredSubmissionRange(project?.path, ticket.submission, ticket.ref, integrationRefs, { allowDivergedExpectedUpstream: true });
   }
   if (!scopeValidation.ok) {
     const outside = Array.isArray(scopeValidation.outside) ? scopeValidation.outside : [];
     if (scopeValidation.reason === 'expected_upstream_diverged') {
       const targetBranch = String(target?.branch || '').trim() || scopeValidation.upstream || 'the configured target';
+      const dependency = missingSubmissionBaseDependency(slug, project?.path, ticket.submission.base, scopeValidation.currentUpstream);
       return {
         ok: false,
         reason: scopeValidation.reason,
         outside,
         ticket,
         scopeValidation,
-        message: `${ticket.ref} integration refused; recorded expected upstream ${scopeValidation.upstreamCommit} is no longer reachable from target branch ${targetBranch}. Recovery: re-apply the verified candidate onto the current target, re-gate it, then record it with groomClose passing deliveryCommit ${ticket.submission.commit} and deliveryMethod "manual" (CLI --delivery-commit / --delivery-method), with the candidate's content present in the integration working tree.`,
+        message: `${ticket.ref} integration refused; recorded expected upstream ${scopeValidation.upstreamCommit} is no longer reachable from target branch ${targetBranch}. Missing candidate dependency: ${dependency}. Recovery: re-apply the verified candidate onto the current target, re-gate it, then record it with groomClose passing deliveryCommit ${ticket.submission.commit} and deliveryMethod "manual" (CLI --delivery-commit / --delivery-method), with the candidate's content present in the integration working tree.`,
       };
     }
     const scopeFailure = scopeValidation.message || (scopeValidation.reason === 'missing_scope_snapshot'
@@ -1269,22 +1260,6 @@ function deliveryInProgress(ticket: any, lock: string) {
   return { ok: false, reason: 'delivery_in_progress', ticket, holder, message: named };
 }
 
-// A sibling that submitted while the post-merge suite ran recorded the delivery as its expected upstream. The
-// rollback takes that commit off the target, so leaving the record behind refused the sibling as diverged on
-// every later integrate (GH-308).
-function restoreRolledBackExpectedUpstreams(slug: any, repo: string, before: string, rolledBackHead: string) {
-  const rolledBack = new Set(integrationGit(repo, ['rev-list', `${before}..${rolledBackHead}`]).split(/\r?\n/).filter(Boolean));
-  const recordsRolledBackUpstream = (ticket: any) => pendingSubmission(ticket) && rolledBack.has(ticket.submission.upstreamCommit);
-  const pointRecordsAtPreMergeHead = () => {
-    for (const ticket of listTickets(slug).filter(recordsRolledBackUpstream)) {
-      ticket.submission.upstreamCommit = before;
-      ticket.updatedAt = new Date().toISOString();
-      putTicket(slug, ticket);
-    }
-  };
-  transaction(pointRecordsAtPreMergeHead);
-}
-
 function handResolvedConflictRecovery(ticket: any, candidate: string, targetBranch: string) {
   return `Resolve it by hand: on ${targetBranch} merge the pinned candidate itself (\`git merge --no-ff ${candidate}\`, not a cherry-pick), resolve the conflict in that merge commit, commit and re-gate it, then record it with integrate deliveryCommit ${candidate} and reason (CLI \`sidequest integrate ${ticket.ref} --delivery-commit ${candidate} --reason "<resolution>"\`), or with groomClose passing deliveryCommit <the resolved merge commit> and deliveryMethod "manual". Keeping ${candidate} as a parent of that merge is what proves the candidate content; either record still requires the bound review and a passing merged-tree gate.`;
 }
@@ -1293,7 +1268,6 @@ function postMergeVerificationFailure(slug: any, ticket: any, verify: any, repo:
   const verificationMessage = `${ticket.ref} verification returned ${verify.status} after ${mode} delivery: ${verify.command || `verification ${verify.status}`}. Log: ${verify.logPath || 'not created'}.`;
   try {
     const rollback = restorePostMergeVerificationCheckout(repo, before, deliveryHead, targetBranch, mode, ignoredDirtyPaths);
-    restoreRolledBackExpectedUpstreams(slug, repo, before, deliveryHead);
     return integrationFailure(slug, ticket, {
       reason: `${verificationOutcome(verify)}_post_merge`,
       before,
@@ -2507,7 +2481,6 @@ function rollBackUnverifiedWave(slug: string | undefined, assembled: AssembledWa
   } catch (rollbackError: any) {
     return { ok: false, reason: `${verificationOutcome(verification)}_wave_delivery_rollback_failed`, tickets: assembled.tickets, before, verify: verification, message: `Wave ${assembled.wave.id} verification failed and rollback failed: ${integrationGitError(rollbackError)}` };
   }
-  restoreRolledBackExpectedUpstreams(slug, repo, before, resultingHead);
   return { ok: false, reason: `${verificationOutcome(verification)}_wave_delivery`, tickets: assembled.tickets, before, verify: verification, message: `Wave ${assembled.wave.id} delivery verification returned ${verification.status}.` };
 }
 
