@@ -5,22 +5,22 @@ import path from 'node:path';
 
 export type SweepFlight = Readonly<{ token: string; transfer(pid: number): void; release(): void }>;
 
-function readOwner(file: string): { pid: number; token: string } | null {
+function readOwner(file: string): { pid: number; token: string; owner: number | undefined } | null {
   try {
-    const match = fs.readFileSync(file, 'utf8').match(/^(\d+):([a-f0-9-]{36})$/);
-    return match ? { pid: Number(match[1]), token: match[2] || '' } : null;
+    const match = fs.readFileSync(file, 'utf8').match(/^(\d+):([a-f0-9-]{36})(?::(-?\d+))?$/);
+    return match ? { pid: Number(match[1]), token: match[2] || '', owner: match[3] === undefined ? undefined : Number(match[3]) } : null;
   } catch {
     return null;
   }
 }
 
 function ownerAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (!Number.isInteger(pid) || pid === 0) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch (error: unknown) {
-    return error instanceof Error && 'code' in error && error.code === 'EPERM';
+    return error instanceof Error && Reflect.get(error, 'code') === 'EPERM';
   }
 }
 
@@ -46,7 +46,8 @@ export function acquireSweepFlight(cwd: string): SweepFlight | null {
   return {
     token,
     transfer(pid) {
-      if (readOwner(file)?.token === token) fs.writeFileSync(file, `${pid}:${token}`);
+      const owner = readOwner(file);
+      if (owner?.token === token && owner.pid === process.pid) fs.writeFileSync(file, `${pid}:${token}`);
     },
     release: () => releaseSweepFlight(cwd, token),
   };
@@ -54,13 +55,29 @@ export function acquireSweepFlight(cwd: string): SweepFlight | null {
 
 export function sweepFlightOwned(cwd: string, token: string): boolean {
   const owner = readOwner(flightFile(cwd));
-  return owner?.token === token && owner.pid === process.pid;
+  return owner?.token === token;
+}
+
+export function sweepFlightNeedsRecovery(cwd: string): boolean {
+  const owner = readOwner(flightFile(cwd));
+  return owner?.owner === 0 && !ownerAlive(owner.pid);
+}
+
+export function protectSweepFlight(cwd: string, token: string, owner = 0): void {
+  const file = flightFile(cwd);
+  if (readOwner(file)?.token === token) fs.writeFileSync(file, `${process.pid}:${token}:${owner}`);
+}
+
+function ownerMayStillRun(owner: NonNullable<ReturnType<typeof readOwner>>): boolean {
+  if (ownerAlive(owner.pid)) return true;
+  if (owner.owner === undefined) return false;
+  return owner.owner === 0 || ownerAlive(owner.owner);
 }
 
 export function reclaimSweepFlight(cwd: string): void {
   const file = flightFile(cwd);
   const owner = readOwner(file);
-  if (!owner || ownerAlive(owner.pid)) return;
+  if (!owner || ownerMayStillRun(owner)) return;
   try {
     // Keep the dead generation's tombstone so delayed reclaimers cannot delete its successor.
     fs.mkdirSync(`${file}.reclaimed-${owner.token}`);

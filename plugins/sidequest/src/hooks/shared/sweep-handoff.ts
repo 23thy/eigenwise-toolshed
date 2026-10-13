@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { stringField, type HookInput } from './input.js';
 import { pluginRoot } from './paths.js';
-import { acquireSweepFlight, reclaimSweepFlight, type SweepFlight } from './sweep-flight.js';
+import { canonicalPath } from '../../lib/kernel/worktree.js';
+import { acquireSweepFlight, reclaimSweepFlight, sweepFlightNeedsRecovery, type SweepFlight } from './sweep-flight.js';
 
 // The sweep removes worktrees, backs up dirty ones and prunes branches: dozens of
 // git subprocesses plus recursive directory deletes. Its cost is bimodal — a few
@@ -53,7 +54,7 @@ function stateDirectory(): string {
 }
 
 export function reportFile(cwd: string): string {
-  const key = crypto.createHash('sha1').update(path.resolve(cwd || '.')).digest('hex').slice(0, 16);
+  const key = crypto.createHash('sha1').update(canonicalPath(cwd || '.')).digest('hex').slice(0, 16);
   return path.join(stateDirectory(), `${key}.json`);
 }
 
@@ -211,7 +212,9 @@ export async function runSweep(data: HookInput): Promise<string[]> {
   } catch {
     return [HANDOFF_FAILED_NOTICE];
   }
-  if (!flight) return [deferralNotice(cwd, readSweepProgress(cwd))];
+  if (!flight) return [sweepFlightNeedsRecovery(cwd)
+    ? 'sidequest: previous worktree sweep could not confirm owned cleanup. Automatic sweeps remain paused until its recorded ownership is reconciled.'
+    : deferralNotice(cwd, readSweepProgress(cwd))];
   return runSweepWorker(data, cwd, flight, drainReport(cwd) || []);
 }
 

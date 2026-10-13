@@ -5,7 +5,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { runSweep, reportFile, drainReport } from '../src/hooks/shared/sweep-handoff.js';
-import { acquireSweepFlight, reclaimSweepFlight, releaseSweepFlight } from '../src/hooks/shared/sweep-flight.js';
+import { acquireSweepFlight, protectSweepFlight, reclaimSweepFlight, releaseSweepFlight } from '../src/hooks/shared/sweep-flight.js';
 
 const plugin = path.resolve(__dirname, '..');
 const { isProcessTerminal } = require('../scripts/owned-process-tree.js') as { isProcessTerminal(pid: number): boolean };
@@ -75,6 +75,70 @@ test('dead sweep ownership is reclaimed without letting an old token release its
     assert.ok(acquireSweepFlight(home));
   } finally {
     process.env = environment;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+
+test('native sweep ownership survives the handoff supervisor and unknown cleanup stays protected', () => {
+  const environment = { ...process.env };
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-sweep-owner-'));
+  process.env.SIDEQUEST_HOME = home;
+  try {
+    const flight = acquireSweepFlight(home)!;
+    protectSweepFlight(home, flight.token, process.pid);
+    const file = reportFile(home).replace(/\.json$/, '.flight');
+    fs.writeFileSync(file, `99999999:${flight.token}:${process.pid}`);
+    reclaimSweepFlight(home);
+    assert.equal(acquireSweepFlight(home), null, 'a live native owner prevents reclamation after supervisor death');
+    fs.writeFileSync(file, `99999999:${flight.token}:0`);
+    reclaimSweepFlight(home);
+    assert.equal(acquireSweepFlight(home), null, 'unknown cleanup cannot be reclaimed as a dead sweep');
+    fs.writeFileSync(file, `99999999:${flight.token}:99999998`);
+    reclaimSweepFlight(home);
+    const successor = acquireSweepFlight(home)!;
+    assert.ok(successor, 'terminal native ownership permits safe reclamation');
+    successor.release();
+  } finally {
+    process.env = environment;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('failed owned cleanup keeps the flight protected instead of starting a successor', async () => {
+  const environment = { ...process.env };
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-sweep-failure-'));
+  const preload = path.join(home, 'failed-owned-cleanup.cjs');
+  fs.writeFileSync(preload, `
+const Module = require('node:module');
+const load = Module._load;
+Module._load = function(request, parent, isMain) {
+  if (request.endsWith('owned-process-tree.js')) return { runOwnedPhase: async () => ({ timedOut: true, cleanupError: 'owned cleanup unconfirmed', status: null }) };
+  return load.call(this, request, parent, isMain);
+};
+`);
+  Object.assign(process.env, {
+    SIDEQUEST_HOME: home,
+    CLAUDE_PLUGIN_ROOT: plugin,
+    SIDEQUEST_SWEEP_DEADLINE_MS: '5000',
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require "${preload.replaceAll(path.sep, '/')}"`,
+  });
+  try {
+    const notices = await runSweep({ cwd: home });
+    assert.match(notices.join('\n'), /owned cleanup unconfirmed/);
+    reclaimSweepFlight(home);
+    assert.equal(acquireSweepFlight(home), null, 'cleanup failure retains single-flight ownership');
+  } finally {
+    process.env = environment;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('equivalent Windows project spellings share the same sweep flight', { skip: process.platform !== 'win32' }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-sweep-path-'));
+  try {
+    assert.equal(reportFile(home), reportFile(home.toUpperCase().replaceAll('\\', '/')));
+  } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
 });

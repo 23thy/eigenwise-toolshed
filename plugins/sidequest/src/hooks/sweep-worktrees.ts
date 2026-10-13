@@ -4,7 +4,7 @@
 import type { HookInput } from './shared/input.js';
 import { runtimeModule, pluginRoot } from './shared/paths.js';
 import path from 'node:path';
-import { releaseSweepFlight, sweepFlightOwned } from './shared/sweep-flight.js';
+import { protectSweepFlight, releaseSweepFlight, sweepFlightOwned } from './shared/sweep-flight.js';
 import { sweepWorktrees, unregisterSweepSession, withWorktreeSweepLock } from './shared/worktree-sweep.js';
 import { appendReport, writeReport } from './shared/sweep-handoff.js';
 
@@ -83,24 +83,27 @@ function workerDeadlineMilliseconds(): number {
 
 async function superviseSweep(cwd: string, token: string): Promise<void> {
   if (!sweepFlightOwned(cwd, token)) return;
-  try {
-    const { runOwnedPhase } = require(path.join(pluginRoot(), 'scripts', 'owned-process-tree.js')) as {
-      runOwnedPhase(options: {
-        command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; timeoutMilliseconds: number;
-      }): Promise<{ timedOut: boolean; cleanupError: string | null; status: number | null }>;
-    };
-    const result = await runOwnedPhase({
-      command: process.execPath,
-      args: [path.join(pluginRoot(), 'hooks', 'sweep-worktrees.js'), '--cwd', cwd, '--session', argument('session')],
-      cwd,
-      env: process.env,
-      timeoutMilliseconds: workerDeadlineMilliseconds(),
-    });
-    if (result.timedOut) writeReport(cwd, ['sidequest: worktree sweep reached its worker deadline; owned process-tree cleanup was requested.']);
-    if (result.cleanupError) throw new Error(result.cleanupError);
-  } finally {
-    releaseSweepFlight(cwd, token);
+  const { runOwnedPhase } = require(path.join(pluginRoot(), 'scripts', 'owned-process-tree.js')) as {
+    runOwnedPhase(options: {
+      command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; timeoutMilliseconds: number;
+      onPhaseStarted(owner: { ownerPid: number; ownedGroupId: number | null }): void;
+    }): Promise<{ timedOut: boolean; cleanupError: string | null; status: number | null }>;
+  };
+  protectSweepFlight(cwd, token);
+  const result = await runOwnedPhase({
+    command: process.execPath,
+    args: [path.join(pluginRoot(), 'hooks', 'sweep-worktrees.js'), '--cwd', cwd, '--session', argument('session')],
+    cwd,
+    env: process.env,
+    timeoutMilliseconds: workerDeadlineMilliseconds(),
+    onPhaseStarted: ({ ownerPid, ownedGroupId }) => protectSweepFlight(cwd, token, ownedGroupId === null ? ownerPid : -ownedGroupId),
+  });
+  if (result.timedOut) writeReport(cwd, ['sidequest: worktree sweep reached its worker deadline; owned process-tree cleanup was requested.']);
+  if (result.cleanupError) {
+    protectSweepFlight(cwd, token);
+    throw new Error(result.cleanupError);
   }
+  releaseSweepFlight(cwd, token);
 }
 
 async function main(): Promise<void> {
