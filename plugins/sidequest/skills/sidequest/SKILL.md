@@ -230,13 +230,10 @@ cause with evidence (`file:line`), the fix, verification.
 Only the main thread can set MCP `dispatch.workProvenance` before preparation. Its `kind` is
 `new-behavior`, `behavior-preserving-refactor`, `inherited-read-only`, `docs`, `type-annotation-only`
 or `fixture-only`. Each source names a native producer ref, its exact `preparedAt` (current dispatch
-or an archived attempt) and an immutable owned `commit`, optionally a `captureId`. A generation
-missing `baseCommit` or `sanctionedCommits` gets them derived from its own git verification captures
-(base: the first capture candidate's single merge base with the integration branch), stored with
-`derivedFrom` and named in the admission hold. A fact that cannot be derived unambiguously, any other
-missing fact, or a submitted generation whose current submission names another candidate, is refused
-by name. The board freezes base, scope, byte identities and capture identity. A released native
-preparation never becomes a submitted source.
+or an archived attempt) and an immutable owned `commit`, optionally a `captureId`. Missing
+`baseCommit`/`sanctionedCommits` derive from its captures; ambiguity, other gaps or a
+submission naming another candidate refuse by name. The board freezes base, scope, byte
+and capture identity. Released preparation never becomes submitted source.
 
 Unchanged inherited work and a declared GREEN behavior-preserving refactor do not need invented
 new reds. New owned behavior keeps its own control requirements. Source/test byte drift, changed
