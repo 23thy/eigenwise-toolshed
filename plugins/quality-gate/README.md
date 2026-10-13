@@ -2,6 +2,10 @@
 
 Quality Gate owns AST complexity, stable function identities and per-function CRAP scoring. It uses TypeScript 7 from the scored project first, then the plugin's installed dependency. Install the plugin's dependencies with `npm install` in this directory if neither has the supported parser API.
 
+`--source <path>` narrows configured or default sources for one run without changing config. Repeat it for multiple files or directories, relative to the measured project root, for example `crap --project <root> --source src/changed.py --source src/other.py --cc-only`. Config exclusions still apply; selectors cannot widen configured sources.
+
+Invalid UTF-8, Python syntax errors and lone surrogates produce an informational UNVERIFIED row for that file. Other selected files are still measured.
+
 ## Project CRAP gate
 
 ```text
