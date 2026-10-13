@@ -299,6 +299,9 @@
         "workingTreeDelivery": {
           "type": "boolean"
         },
+        "externalDeliverable": {
+          "type": "boolean"
+        },
         "anchors": {
           "type": "string",
           "maxLength": 4000
@@ -330,22 +333,6 @@
           "type": "string",
           "maxLength": 1000
         },
-        "storyId": {
-          "type": "string",
-          "pattern": "^US-\\d+$"
-        },
-        "complexity": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 10,
-          "description": "Legacy score; why required."
-        },
-        "why": {
-          "type": "string"
-        },
-        "category": {
-          "type": "string"
-        },
         "reviewTarget": {
           "type": "object",
           "properties": {
@@ -370,6 +357,22 @@
           "required": [
             "ref"
           ]
+        },
+        "storyId": {
+          "type": "string",
+          "pattern": "^US-\\d+$"
+        },
+        "complexity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Legacy score; why required."
+        },
+        "why": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
         },
         "route": {
           "type": "object",
@@ -428,15 +431,6 @@
             "urgent"
           ]
         },
-        "status": {
-          "type": "string",
-          "enum": [
-            "todo",
-            "doing",
-            "awaiting-oracle",
-            "done"
-          ]
-        },
         "highStakes": {
           "type": "boolean"
         },
@@ -451,9 +445,6 @@
           "items": {
             "type": "string"
           }
-        },
-        "by": {
-          "type": "string"
         },
         "produces": {
           "type": "array",
@@ -516,28 +507,6 @@
           "type": "string",
           "maxLength": 1000
         },
-        "storyId": {
-          "anyOf": [
-            {
-              "type": "string",
-              "pattern": "^US-\\d+$"
-            },
-            {
-              "const": "none"
-            }
-          ]
-        },
-        "complexity": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 10
-        },
-        "why": {
-          "type": "string"
-        },
-        "category": {
-          "type": "string"
-        },
         "reviewTarget": {
           "type": "object",
           "properties": {
@@ -562,6 +531,40 @@
           "required": [
             "ref"
           ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "todo",
+            "doing",
+            "awaiting-oracle",
+            "done"
+          ]
+        },
+        "by": {
+          "type": "string"
+        },
+        "storyId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^US-\\d+$"
+            },
+            {
+              "const": "none"
+            }
+          ]
+        },
+        "complexity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "why": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
         },
         "route": {
           "anyOf": [
@@ -1350,7 +1353,6 @@
       },
       "required": [
         "ref",
-        "by",
         "review",
         "reason"
       ]
@@ -1592,7 +1594,6 @@
       },
       "required": [
         "ref",
-        "by",
         "supersededBy",
         "reason"
       ]
