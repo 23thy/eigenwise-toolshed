@@ -40,6 +40,7 @@ process.env.SIDEQUEST_DISCOVERY_DIRS = DISCOVERY;
 
 const store = require('../lib/store.js');
 const mcp = require('../lib/mcp.js');
+const db = require('../lib/db.js');
 const { makeMcpCaller } = require('./_helpers.js');
 const { callTool } = makeMcpCaller(mcp);
 const slug = store.ensureProject(PROJECT).slug;
@@ -229,6 +230,30 @@ test('known Fable quota failure prepares the exact category fallback and preserv
   assert.deepEqual(store.getCategory('quota.fixture').route, { model: 'fable', effort: 'xhigh' });
 });
 
+// Current writers mark a dispatch terminal whenever they clear its token, so a live quota recovery without
+// one only exists in an older persisted record. Redispatch must still apply the category fallback to it
+// instead of returning to the model that ran out of quota.
+test('a persisted quota recovery without its token re-prepares on the category fallback', () => {
+  const ticket = createFixture('tokenless quota recovery');
+  const launched = launch(ticket, 'quota-tokenless-primary');
+  const recovered = store.recoverDispatchQuotaFailure(slug, ticket.ref, {
+    token: launched.prepared.token,
+    executor: launched.prepared.ticket.dispatchExecutor,
+    error: "Agent launch failed: You've reached your Fable limit.",
+  });
+  assert.equal(recovered.ok, true);
+  const tokenless = { ...store.getTicket(slug, ticket.ref), dispatchNonce: null, model: 'fable', effort: 'xhigh' };
+  db.putRow(db.openDb(SIDEQUEST_HOME), 'tickets', { id: tokenless.id, project: slug, ref: tokenless.ref, status: tokenless.status, archived: 0, ord: tokenless.order, claim_by: null, data: tokenless });
+  assert.equal(store.getTicket(slug, ticket.ref).dispatch.terminalAt, null);
+
+  const prepared = store.prepareDispatch(slug, ticket.ref, { allowUnscoped: true, sessionId: 'quota-tokenless-next' });
+  assert.equal(prepared.reused, undefined);
+  assert.notEqual(prepared.token, recovered.token);
+  assert.equal(prepared.ticket.model, 'codex-gpt-6-1-sol');
+  assert.equal(prepared.ticket.effort, 'max');
+  assert.equal(prepared.ticket.exec.backend, 'codex');
+});
+
 test('quota recovery cannot prepare a ticket parked before launch', () => {
   const ticket = createFixture('parked quota recovery');
   const prepared = store.prepareDispatch(slug, ticket.ref, { allowUnscoped: true, sessionId: 'parked-quota-session' });
@@ -366,16 +391,16 @@ test('PostToolUseFailure records observed terminal executor failures without rel
 test('every seeded Opus category recovers to its explicit Codex fallback without replacing local overrides', () => {
   const expected = new Map([
     ['debugging', {
-      route: { model: 'opus', effort: 'high' },
-      fallback: { model: 'codex-gpt-5-6-terra', effort: 'high' },
+      route: { model: 'opus', effort: 'medium' },
+      fallback: { model: 'codex-gpt-5-6-terra', effort: 'medium' },
     }],
     ['coding.hard', {
-      route: { model: 'opus', effort: 'xhigh' },
-      fallback: { model: 'codex-gpt-6-1-sol', effort: 'xhigh' },
+      route: { model: 'opus', effort: 'medium' },
+      fallback: { model: 'codex-gpt-6-1-sol', effort: 'medium' },
     }],
     ['spike-investigation', {
-      route: { model: 'opus', effort: 'high' },
-      fallback: { model: 'codex-gpt-6-1-sol', effort: 'high' },
+      route: { model: 'opus', effort: 'medium' },
+      fallback: { model: 'codex-gpt-6-1-sol', effort: 'medium' },
     }],
     ['visual-evaluation', {
       route: { model: 'opus', effort: 'medium' },
