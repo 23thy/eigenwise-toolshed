@@ -1146,7 +1146,7 @@ function attemptCommit(ticket?: any, opts?: any) {
   return opts?.commit || ticket?.checkpoint?.commit || ticket?.submission?.commit || null;
 }
 
-type ObservedWorktree = { facts: ReturnType<typeof immutableWorktreeFacts>; registered: boolean };
+type ObservedWorktree = { facts: ReturnType<typeof immutableWorktreeFacts>; registered: boolean; commits: string[] };
 type ObservedWorktreeFacts = ReadonlyMap<string, ObservedWorktree>;
 
 // A release observes its checkouts under the ticket file lock before BEGIN, so the write transaction reads facts
@@ -1155,12 +1155,12 @@ function observeReleaseWorktreeFacts(slug: string, ticket: StoredRecord): Observ
   const state = dispatchState(ticket);
   if (state?.sharedTree !== false) return new Map();
   const worktrees = [state.worktree, state.releaseObservedCheckout?.worktree].filter(Boolean).map((worktree: string): string => canonicalPath(worktree));
-  return new Map(worktrees.map((worktree: string) => [worktree, observeWorktree(slug, worktree)]));
+  return new Map(worktrees.map((worktree: string) => [worktree, observeWorktree(slug, worktree, state.baseCommit)]));
 }
 
-function observeWorktree(slug: string, worktree: string): ObservedWorktree {
+function observeWorktree(slug: string, worktree: string, baseCommit: string): ObservedWorktree {
   const facts = immutableWorktreeFacts(slug, worktree);
-  return { facts, registered: registeredProjectCheckout(facts) };
+  return { facts, registered: registeredProjectCheckout(facts), commits: facts ? commitsSinceBaseline(facts.worktree, baseCommit, facts.revision) : [] };
 }
 
 function worktreeFactsFor(slug: string, worktree: string, observed?: ObservedWorktreeFacts) {
@@ -1177,6 +1177,18 @@ function captureTerminalWorktreeRevision(slug?: any, state?: any, at?: any, obse
   if (!factsDescribeBoundCheckout(facts, state)) return;
   state.terminalWorktreeRevision = facts.revision;
   state.terminalWorktreeObservedAt = at;
+  recordTerminalCheckoutCommits(state, terminalCheckoutCommits(state, facts, observed));
+}
+
+function terminalCheckoutCommits(state: StoredRecord, facts: WorktreeFacts, observed?: ObservedWorktreeFacts): string[] {
+  return observed ? observed.get(canonicalPath(state.worktree))?.commits ?? [] : commitsSinceBaseline(facts.worktree, state.baseCommit, facts.revision);
+}
+
+// The board commit tool was the only writer, so a generation whose executor committed with raw git in its
+// isolated checkout ended without sanctionedCommits and could never be a provenance source (SQ-3675).
+function recordTerminalCheckoutCommits(state: StoredRecord, commits: readonly string[]): void {
+  const recorded: string[] = Array.isArray(state.sanctionedCommits) ? state.sanctionedCommits.map(String) : [];
+  state.sanctionedCommits = [...new Set([...recorded, ...commits])];
 }
 
 function terminalRevisionBound(slug: unknown, state: StoredRecord): boolean {
@@ -2771,7 +2783,8 @@ function priorAttemptFields(plan: PreparedDispatchPlan) {
 
 function preparedDispatchRecord(slug: string, t: StoredRecord, current: StoredRecord, plan: PreparedDispatchPlan, opts: DispatchOptions, preflight: DispatchPreflight) {
   const provenance = preparationProvenanceFields(plan, opts, preflight.preparedCompatibility);
-  const workProvenance = prepareWorkProvenance(preflight.projectPath, opts.workProvenance, String(opts.sessionId || ''), ref => getTicket(slug, ref));
+  const integrationCommit = opts.workProvenance ? integrationBaseCommit(slug, plan.integrationTargetState) : '';
+  const workProvenance = prepareWorkProvenance(preflight.projectPath, opts.workProvenance, String(opts.sessionId || ''), ref => getTicket(slug, ref), integrationCommit);
   return {
     ...provenance,
     lifecycleAttempt: { ...provenance.lifecycleAttempt, workProvenance },

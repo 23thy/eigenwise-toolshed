@@ -480,6 +480,12 @@ generation and its immutable owned commit. Sidequest records the source/test byt
 existing capture's candidate, command and nonce. Changed bytes or generations refuse. Workers
 cannot grant this authority to themselves, and a declaration cannot change a running dispatch.
 
+Older generations (before 5.10.0, or any whose executor committed with raw git) may lack
+`baseCommit` or `sanctionedCommits`. Sidequest derives those two from the generation's own git
+verification captures, records which capture each came from, and lists them in the admission hold.
+If the base is ambiguous, for example because the candidate already landed on the integration
+branch, the source is still refused and the refusal names the missing fact.
+
 Unchanged inherited tests and declared GREEN refactors don't need fabricated historical reds.
 New owned behavior still needs its own controls. This declaration proves provenance only; its
 execution, quality and admission stay **UNVERIFIED**, and submission stays held. Keep a factual
