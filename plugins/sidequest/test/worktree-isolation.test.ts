@@ -3269,6 +3269,76 @@ function sq3147RotatedWave(label: string) {
   return { wave, one, two, three };
 }
 
+// Same-message spawns run their WorktreeCreate hooks as concurrent processes, which is the shape GH-406 reported.
+function createWorktreesConcurrently(sessionId: string, names: string[]): Promise<Array<{ ok: boolean; output: string }>> {
+  const { execFile } = require('node:child_process');
+  return Promise.all(names.map(name => new Promise<{ ok: boolean; output: string }>((resolve) => {
+    const child = execFile(process.execPath, [path.join(HOOKS, 'worktree-create.js')], { encoding: 'utf8', env: { ...process.env, SIDEQUEST_HOME }, windowsHide: true },
+      (error: Error | null, stdout: string, stderr: string) => resolve({ ok: !error, output: (error ? stderr || error.message : stdout).trim() }));
+    child.stdin.end(JSON.stringify({ hook_event_name: 'WorktreeCreate', name, session_id: sessionId, cwd: PROJECT }));
+  })));
+}
+
+async function claimEachOwnCheckout(wave: ReturnType<typeof sq3139CrossedWave>, live: ReturnType<typeof sq3139CrossedWave>['runtimes']) {
+  for (const runtime of live) {
+    const ack = await wave.claim(runtime);
+    assert.equal(ack.ok, true, `${runtime.ref} claims: ${ack.reason || ''} ${ack.message || ''}`);
+  }
+  for (const runtime of live) {
+    assert.equal(wave.recorded(runtime).worktree, worktrees.canonicalPath(runtime.path), `${runtime.ref} is leased the checkout its own executor runs in`);
+  }
+}
+
+for (const reversed of [false, true]) {
+  test(`GH-406: siblings whose checkouts are created in ${reversed ? 'reverse' : 'board'} order each end leased to their own executor's checkout`, async () => {
+    const wave = sq3139CrossedWave(reversed ? 'gh406reverse' : 'gh406board');
+    const creationOrder = reversed ? [wave.second, wave.first] : [wave.first, wave.second];
+    try {
+      for (const runtime of creationOrder) assert.equal(createWorktree(wave.sessionId, runtime.name).ok, true, `${runtime.ref} is created`);
+      const bound = wave.runtimes.map(runtime => wave.recorded(runtime).worktree).sort();
+      assert.deepEqual(bound, wave.runtimes.map(runtime => worktrees.canonicalPath(runtime.path)).sort(), 'each creation holds one reservation');
+      // The hook payload names no ticket, so creation in this order still crosses the pair; the claim settles it.
+      const crossedAtCreation = wave.recorded(wave.first).worktree !== worktrees.canonicalPath(wave.first.path);
+      assert.equal(crossedAtCreation, !reversed, 'the fixture reproduces the creation-order crossing in exactly one order');
+      await claimEachOwnCheckout(wave, wave.runtimes);
+    } finally {
+      wave.cleanup();
+    }
+  });
+}
+
+test('GH-406: concurrent WorktreeCreate hooks of one message each bind a free reservation instead of refusing already_bound', async () => {
+  const wave = sq3139CrossedWave('gh406race', ['one', 'two', 'three']);
+  try {
+    const results = await createWorktreesConcurrently(wave.sessionId, wave.runtimes.map(runtime => runtime.name));
+    assert.deepEqual(results.filter(result => !result.ok), [], 'no sibling spawn dies on a reservation another hook took first');
+    const bound = wave.runtimes.map(runtime => wave.recorded(runtime).worktree).sort();
+    assert.deepEqual(bound, wave.runtimes.map(runtime => worktrees.canonicalPath(runtime.path)).sort(), 'every checkout holds exactly one reservation');
+    await claimEachOwnCheckout(wave, wave.runtimes);
+  } finally {
+    wave.cleanup();
+  }
+});
+
+test('GH-406: a concurrent sibling creation that fails leaves the live siblings their own checkouts', async () => {
+  const wave = sq3139CrossedWave('gh406fail', ['one', 'two', 'three']);
+  const failed = wave.first;
+  const live = wave.runtimes.slice(1);
+  try {
+    fs.mkdirSync(failed.path, { recursive: true });
+    fs.writeFileSync(path.join(failed.path, 'occupant.txt'), 'blocks creation\n');
+    const results = await createWorktreesConcurrently(wave.sessionId, wave.runtimes.map(runtime => runtime.name));
+    assert.deepEqual(results.map(result => result.ok), [false, true, true], results.map(result => result.output).join('\n'));
+    await claimEachOwnCheckout(wave, live);
+    const failedRecord = wave.recorded(failed);
+    assert.equal(failedRecord.outcome, 'launched', 'the failed spawn retires nobody else and stays retryable');
+    assert.equal(failedRecord.worktree || null, null, 'the failed ticket keeps no binding to a live sibling checkout');
+    assert.equal(fs.existsSync(path.join(failed.path, 'occupant.txt')), true, 'recovery touched nothing at the uncreated path');
+  } finally {
+    wave.cleanup();
+  }
+});
+
 test('SQ-3147: a rotated crossing settles through the claim-time exchange when nobody is superseded', async () => {
   const { wave, two, three } = sq3147RotatedWave('rotation');
   try {

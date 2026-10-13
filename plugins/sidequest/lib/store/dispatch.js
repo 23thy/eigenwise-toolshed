@@ -2799,19 +2799,21 @@ function createDispatch(dependencies) {
   function freshNativeCheckoutBinding(slug, ticketId, request) {
     const ticket = getTicket(slug, ticketId);
     const state = dispatchState(ticket);
-    if (!dispatchCreationCandidate(state, request.sessionId)) return { ok: false, reason: "already_bound" };
+    if (!dispatchCreationCandidate(state, request.sessionId)) return null;
     if (request.attempt && request.attempt !== state.preparedAt) return { ok: false, reason: "stale_attempt" };
     return retainedCompositionCheckoutRefusal(ticket, request.worktree) ?? recordNativeCheckoutBinding(slug, ticket, state, request);
   }
   function bindAvailableNativeCheckout(slug, request, tickets) {
-    const candidate = tickets.find((ticket) => dispatchCreationCandidate(dispatchState(ticket), request.sessionId));
-    if (candidate) return dependencies.withCompositionGenerationLock(
-      slug,
-      candidate.id,
-      () => freshNativeCheckoutBinding(slug, candidate.id, request)
-    );
+    for (const candidate of tickets.filter((ticket) => dispatchCreationCandidate(dispatchState(ticket), request.sessionId))) {
+      const bound = dependencies.withCompositionGenerationLock(
+        slug,
+        candidate.id,
+        () => freshNativeCheckoutBinding(slug, candidate.id, request)
+      );
+      if (bound) return bound;
+    }
     if (unlaunchedSessionDispatch(slug, request.sessionId)) return { ok: false, reason: "dispatch_launch_unrecorded" };
-    const candidates = tickets.map((candidate2) => ({ candidate: candidate2, state: dispatchState(candidate2) })).filter((candidate2) => Boolean(candidate2.state));
+    const candidates = listTickets(slug).map((candidate) => ({ candidate, state: dispatchState(candidate) })).filter((candidate) => Boolean(candidate.state));
     return { ...unavailableWorktreeBinding(slug, candidates, request.sessionId, request.worktree), ok: false };
   }
   function bindDispatchWorktreeCreation(slug, sessionId, worktree, attempt) {
