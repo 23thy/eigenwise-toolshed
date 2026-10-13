@@ -154,7 +154,3 @@ export function ownedWorkPaths(root: string, provenance: WorkProvenance | undefi
   requireFact(provenance.kind !== 'inherited-read-only' || owned.every(file => isInScope(file, ['.release/unreleased/'])), 'inherited-read-only declaration has new owned work');
   return owned;
 }
-export function provenanceAdmissionHold(provenance: WorkProvenance | undefined): { ok: false; reason: string; message: string } | undefined {
-  if (!provenance) return;
-  return { ok: false, reason: 'work_provenance_unverified', message: 'Frozen work provenance is a factual declaration only. Execution, quality and source admission remain UNVERIFIED; checkpoint and release preparation, never submit it as accepted work.' };
-}

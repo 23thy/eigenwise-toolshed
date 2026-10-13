@@ -3041,6 +3041,7 @@ function submitTicket(slug?: any, idOrRef?: any, by?: any, opts?: any) {
       worktree,
       admittedScope,
       ...(pinnedBaseline ? { baseline: pinnedBaseline } : {}),
+      ...(t.dispatch?.workProvenance ? { workProvenance: t.dispatch.workProvenance } : {}),
       unscopedPaths: gatedPaths,
       ...(rejectedSubmission ? { supersedesRejectedSubmission: rejectedSubmission.commit } : {}),
       ...(inheritedPaths.length ? { inheritedPaths } : {}),

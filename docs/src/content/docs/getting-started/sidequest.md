@@ -482,9 +482,11 @@ cannot grant this authority to themselves, and a declaration cannot change a run
 
 Unchanged inherited tests and declared GREEN refactors don't need fabricated historical reds.
 New owned behavior still needs its own controls. This declaration proves provenance only; its
-execution, quality and admission stay **UNVERIFIED**, and submission stays held. Keep a factual
-checkpoint and release the preparation with its commit and range. A released preparation stays
-unaccepted and cannot replace a pending submission in the existing composition flow.
+execution, quality and admission stay **UNVERIFIED**. While the frozen sources still match, the
+dispatch submits like any other: its submission carries the frozen record, and integration runs
+the pinned verifier on the merged tree as usual. If a source drifts, completion and submit refuse.
+The producer's released preparation itself stays unaccepted and cannot replace a pending
+submission in the existing composition flow.
 
 ## Work kind and completion oracle
 

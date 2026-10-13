@@ -1718,8 +1718,58 @@ test('source provenance accepts unchanged tests from genuine released native pre
   assert.equal(ticket.lifecycleAttempt.workProvenance.execution, 'UNVERIFIED');
   assert.equal(ticket.dispatch.workProvenance.quality, 'UNVERIFIED');
   assert.equal(provenanceCompletion(ticket).ok, true);
-  assert.equal(require('../lib/store/work-provenance.js').provenanceAdmissionHold(ticket.dispatch.workProvenance).reason, 'work_provenance_unverified');
   assert.equal(store.getTicket(slug, origin.ref).submission, undefined);
+  releaseProvenance(ticket);
+});
+
+async function commitProvenanceFragment(ticket: { ref: string }) {
+  fs.mkdirSync(path.join(PROJECT_DIR, '.release', 'unreleased'), { recursive: true });
+  fs.writeFileSync(path.join(PROJECT_DIR, '.release', 'unreleased', ticket.ref + '.md'), '---\nsidequest: minor\n---\nInherited provenance fixture.\n');
+  const committed = await provenanceBoardTool('commit', { ref: ticket.ref, by: ticket.ref + '-owner', worktree: PROJECT_DIR, message: 'Inherited provenance fragment' });
+  assert.equal(committed.ok, true, JSON.stringify(committed));
+  const capture = await nativeProvenanceVerification(ticket);
+  assert.equal(capture.capture.status, 'passed');
+  assert.equal(capture.recorded.ok, true, JSON.stringify(capture.recorded));
+  const commit = git(['rev-parse', 'HEAD']);
+  git(['update-ref', 'refs/sidequest/' + ticket.ref, commit]);
+  return commit;
+}
+
+function submitProvenance(ticket: { ref: string }, commit: string) {
+  return provenanceBoardTool('submit', { ref: ticket.ref, by: ticket.ref + '-owner', commit, worktree: PROJECT_DIR, verify: provenanceCommand,
+    body: 'Inherited provenance fragment; execution and quality stay UNVERIFIED.' });
+}
+
+test('source provenance dispatch submits its frozen record and integrates through the pinned verifier', async () => {
+  const origin = await nativeProvenanceProducer();
+  const ticket = await claimProvenance(provenanceTicket('source provenance submits and integrates'), 'inherited-read-only', [origin]);
+  const commit = await commitProvenanceFragment(ticket);
+  const submitted = await submitProvenance(ticket, commit);
+  assert.equal(submitted.ok, true, JSON.stringify(submitted.message || submitted.failures));
+  const submission = store.getTicket(slug, ticket.ref).submission;
+  assert.equal(submission.commit, commit);
+  assert.equal(submission.workProvenance.kind, 'inherited-read-only');
+  assert.equal(submission.workProvenance.execution, 'UNVERIFIED');
+  assert.equal(submission.workProvenance.quality, 'UNVERIFIED');
+  assert.equal(submission.workProvenance.sources[0].input.commit, origin.commit);
+  const integrated = store.integrateSubmission(slug, ticket.ref, { mode: 'merge' });
+  assert.equal(integrated.ok, true, JSON.stringify(integrated.message || integrated.reason));
+  assert.equal(integrated.integration.outcome, 'delivered');
+  assert.equal(integrated.integration.pinnedCommit, commit);
+  assert.equal(integrated.integration.verify.command, provenanceCommand);
+  assert.equal(integrated.integration.verify.status, 'passed');
+  assert.equal(git(['merge-base', '--is-ancestor', commit, 'main']), '');
+});
+
+test('source provenance dispatch whose frozen source drifted cannot submit', async () => {
+  const origin = await nativeProvenanceProducer();
+  const ticket = await claimProvenance(provenanceTicket('source provenance drifted source refuses submit'), 'inherited-read-only', [origin]);
+  const commit = await commitProvenanceFragment(ticket);
+  store.prepareDispatch(slug, origin.ref, { sharedTree: true, sessionId: origin.ref + '-fresh-main' });
+  const refused = await submitProvenance(ticket, commit);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'work_provenance_mismatch', JSON.stringify(refused.failures));
+  assert.equal(store.getTicket(slug, ticket.ref).submission, undefined);
   releaseProvenance(ticket);
 });
 

@@ -232,12 +232,13 @@ Only the main thread can set MCP `dispatch.workProvenance` before preparation. I
 or `fixture-only`. Each source names a native producer ref, its exact `preparedAt` (current dispatch
 or an archived attempt) and an immutable owned `commit`, optionally a `captureId`; a generation missing
 retained facts, or a submitted one whose current submission names another candidate, is refused by
-name. The board freezes base, scope, byte identities and capture identity. A released native
-preparation never becomes a submitted source.
+name. The board freezes base, scope, byte identities and capture identity. The declared source
+stays unaccepted on its producer; this dispatch's own submission is what reaches integration.
 
 Unchanged inherited work and a declared GREEN behavior-preserving refactor do not need invented
 new reds. New owned behavior keeps its own control requirements. Source/test byte drift, changed
 producer generations, incompatible captures, worker self-grants and late declarations refuse.
 The declaration is factual provenance only: execution, quality and admission remain UNVERIFIED.
-It cannot rebind an old receipt or exempt held authored code. Record factual verification or a
-checkpoint, preserve the immutable commit/range, then release preparation. Submission stays held.
+It cannot rebind an old receipt or exempt held authored code. While the frozen sources still match,
+the dispatch submits like any other: the submission carries the frozen record and integration gates
+it with the pinned verifier on the merged tree. Drifted sources refuse completion and submit.
