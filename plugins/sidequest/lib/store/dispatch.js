@@ -1,4 +1,5 @@
 "use strict";
+var import_work_provenance = require("./work-provenance");
 const { canonicalPreparedDispatchExecutor, normalizePreparedDispatch } = require("../prepared-dispatch.js");
 const { classifyVerificationKind, verificationRequirement } = require("../kernel/verification.js");
 const { resolveSuite } = require("../suite-resolver.js");
@@ -75,8 +76,21 @@ function recordVerificationAmendment(ticket, amendment, previousRequirement, nex
 }
 function pinnedVerificationRequirement(ticket, projectPath, verifyEnvironment, sharedTree) {
   const requirement = preparedVerificationRequirement(ticket, projectPath);
-  const deferred = !sharedTree && verifyEnvironment === "shared" && ["command", "suite"].includes(requirement.kind);
+  const deferred = !sharedTree && verifyEnvironment === "shared" && ["command", "suite", "typecheck"].includes(requirement.kind);
   return deferred ? Object.freeze({ ...requirement, environment: "shared" }) : requirement;
+}
+function retainedAttemptHistory(current) {
+  const attempts = structuredClone(current.attempts);
+  const terminalAttempt = attempts.find((attempt) => attempt.preparedAt === current.preparedAt);
+  if (current.terminalAt && terminalAttempt) {
+    Object.assign(terminalAttempt, structuredClone({
+      baseCommit: current.baseCommit,
+      declaredFiles: current.declaredFiles,
+      sanctionedCommits: current.sanctionedCommits,
+      verificationRequirement: current.verificationRequirement
+    }));
+  }
+  return attempts;
 }
 function createDispatch(dependencies) {
   const { ARTIFACT_BASELINE_MAX_PATHS, SHARED_TREE_ARTIFACT_MARKER, assertDispatchTransport, assertSidequestInstall, checkSidequestInstall, servingInstall, prepareAttempt, transitionAttempt, attemptDiagnostic, ensurePythonIoEncoding, localAheadOfUpstreamWarning, availableRoute, boardConfig, claimGraceMs, claimIdleMs, claimReclaimable, claimVerification, classifyDispatchFailure, terminalAgentFailure, commitScope, crypto, database, db, dispatchReadOnly, dispatchFilesystemSnapshotPreflight, dispatchBaselineForProject, dispatchVerifyCommandError, dispatchRouteRefusal, dispatchRouteState, effectiveScope, execFileSync, execProjection, fs, getCategory, getStory, homeRoot, integrationTarget, integrationTargetCommit, legacyCategoryForComplexity, listProjects, listTickets, nonRepoExternalOutput, normalizeArtifactRoots, normalizeFiles, normalizeRoute, normalizeWorktreeIsolation, path, hasOriginRemote, pendingSubmission, agentWorktreePath, agentWorktreeCandidates, agentIdFromWorktreePath, resolvedAgentWorktree, preparedDispatchTtlMs, putTicket, readMeta, releaseTerminalClaim, resolveCategoryFallback, resolveCategoryRoute, resolveTicketRoute, resolveExec, stableExecutorName, staleWorktreeCwdWarning, storyExecutionContract, takeSourceRevisionAdapterSwitch, ticketCategory, ticketStorageRow, withTicketLock, normalizeCategoryId, projectRoutingEnabled, routingDisabledMessage, getTicket, dispatchLaunchName, nextDispatchLaunchSeq, spawnDescription, claudeQuotaFailure, canonicalPath, checkoutInstanceIdentity, createWorktreeLease, worktreeResumeDecision, isCanonicalRegisteredWorktree, withTicketLocks, withTicketFileLocks, guardedTransaction, ticketGenerations, changedTicketSince, unclaimedDispatchWorktreeReclaim } = dependencies;
@@ -1502,9 +1516,12 @@ function createDispatch(dependencies) {
     if (!superseded.ok) throw new Error(`prepare dispatch: ${superseded.message || `${idOrRef} has no unbound dispatch attempt to retire (${superseded.reason}).`}`);
     return Object.assign(superseded, { retired: true });
   }
+  function investigationWithoutRepositoryWrites(ticket) {
+    return !normalizeFiles(ticket.files).length && /\bno repository writes\b/i.test(ticket.description || "");
+  }
   function undeclaredScopeRefusal(slug, ticket, opts) {
     const noDeclaredFileScope = unscopedWriteCannotAutoApprove(ticket, {
-      dispatchReadOnly,
+      dispatchReadOnly: (candidate) => dispatchReadOnly(candidate) || investigationWithoutRepositoryWrites(candidate),
       normalizeFiles,
       autoApproveScope: boardConfig(slug)?.autoApproveScope
     });
@@ -1737,7 +1754,7 @@ function createDispatch(dependencies) {
   }
   function priorAttemptHistory(current) {
     return {
-      attempts: Array.isArray(current?.attempts) ? current.attempts.slice() : [],
+      attempts: Array.isArray(current?.attempts) ? retainedAttemptHistory(current) : [],
       supersededTokens: Array.isArray(current?.supersededTokens) ? current.supersededTokens.slice() : []
     };
   }
@@ -1792,7 +1809,7 @@ function createDispatch(dependencies) {
     if (worktreeWarning) throw new Error(`prepare dispatch: ${t.ref} cannot pin the immutable candidate checkout. ${worktreeWarning}`);
   }
   function dispatchIsolation(slug, t, current, opts, effectiveFiles) {
-    const readonly = dispatchReadOnly(t);
+    const readonly = dispatchReadOnly(t) || investigationWithoutRepositoryWrites(t);
     const worktreeIsolation = normalizeWorktreeIsolation(readMeta(slug)?.worktreeIsolation);
     const reviewTargetState = reviewDispatchTarget(slug, t);
     const sharedTree = initialSharedTree(reviewTargetState, worktreeIsolation, requestedSharedTree(opts, current));
@@ -2149,8 +2166,12 @@ function createDispatch(dependencies) {
     };
   }
   function preparedDispatchRecord(slug, t, current, plan, opts, preflight) {
+    const provenance = preparationProvenanceFields(plan, opts, preflight.preparedCompatibility);
+    const workProvenance = (0, import_work_provenance.prepareWorkProvenance)(preflight.projectPath, opts.workProvenance, String(opts.sessionId || ""), (ref) => getTicket(slug, ref));
     return {
-      ...preparationProvenanceFields(plan, opts, preflight.preparedCompatibility),
+      ...provenance,
+      lifecycleAttempt: { ...provenance.lifecycleAttempt, workProvenance },
+      workProvenance,
       ...checkoutPlacementFields(plan, preflight, opts),
       declaredFiles: plan.artifact.declaredFiles,
       boardAddedFiles: plan.artifact.boardAddedFiles,
@@ -2251,7 +2272,13 @@ function createDispatch(dependencies) {
       throw error;
     }
   }
-  function prepareDispatch(slug, idOrRef, opts) {
+  function prepareDispatch(slug, idOrRef, opts = {}, grant = {}) {
+    const current = getTicket(slug, idOrRef)?.dispatch;
+    (0, import_work_provenance.authorizeWorkDeclaration)(opts.workProvenance, opts.sessionId, grant.allowWorkProvenance === true, Boolean(current && !current.terminalAt));
+    const declaration = opts.workProvenance === void 0 ? void 0 : (0, import_work_provenance.workDeclaration)(opts.workProvenance);
+    return prepareDispatchRequest(slug, idOrRef, { ...opts, workProvenance: declaration });
+  }
+  function prepareDispatchRequest(slug, idOrRef, opts) {
     opts = opts || {};
     if (opts.retireOnly === true) return retireUnboundDispatchOnly(slug, idOrRef, opts);
     const { projectPath, found } = dispatchableTicket(slug, idOrRef, opts);
@@ -3282,7 +3309,7 @@ function createDispatch(dependencies) {
         }).trim().split(/\r?\n/).filter(Boolean);
       }
       const committed = commits.length ? commitScope.rangePaths(workspace.root, commits) : [];
-      return { ok: true, workspace, ...workingState, committed };
+      return { ok: true, workspace, ...workingState, committed, commitCount: commits.length };
     } catch (error) {
       return { ok: false, reason: "git_error", message: error?.message || String(error) };
     }

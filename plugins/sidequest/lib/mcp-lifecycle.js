@@ -595,7 +595,7 @@ const tools = [
   },
   {
     name: "done",
-    description: "Finish. A readonly last dispatch closes without a submission; a clean writable scope needs externalDeliverable:true plus a current-attempt pinned verify-capture, or typed verify evidence when the ticket has no pinned command. Commandless working-tree delivery requires typed verify evidence.",
+    description: "Finish with a report. A dispatched executor with no commit, no dirty declared path, and no pending submission may close without a fake submission. Repository changes require commit and submit. Commandless working-tree delivery requires typed verify evidence.",
     inputSchema: {
       type: "object",
       properties: {
@@ -604,7 +604,7 @@ const tools = [
         by: { type: "string" },
         model: { type: "string", description: "Concrete runtime model that actually worked this ticket (provenance)." },
         effort: { type: "string", enum: store.VALID_EFFORTS },
-        body: { type: "string", description: "Final report stored as the completion comment." },
+        body: { type: "string", description: "Final report stored as the completion comment; non-behavior frozen work records negativeControl: not_required(reason), while new behavior requires the claim-holder assertion-failure marker." },
         verify: { type: "string", maxLength: 4e3, description: "Typed evidence for active commandless working-tree delivery, and for a clean externalDeliverable:true closeout on a ticket without a pinned command. Command or suite delivery still requires its matching verify-capture." },
         session: { type: "string" }
       },

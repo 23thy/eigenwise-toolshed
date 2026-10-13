@@ -38,7 +38,7 @@ test('resolves the scored project compiler before the plugin dependency', async 
     assert.ok(resolveCompiler(project).resolve('typescript/unstable/ast').startsWith(project));
     assert.deepEqual((await (await createAnalyzer(project)).collectFunctions('const double = (value) => value * 2;', 'subject.js')).map((descriptor) => descriptor.name), ['double']);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -72,7 +72,7 @@ test('measure consumes real V8 coverage, preserves report JSON and fails at six'
     const coverage = path.join(root, 'coverage');
     await fs.mkdir(coverage);
     assert.deepEqual(await fs.readdir(coverage), []);
-    const execution = runNode(['--input-type=module', '-e', `const { subject } = await import(${JSON.stringify(pathToFileURL(subject).href)}); for (let value = 0; value <= 5; value += 1) subject(value);`], { cwd: project, env: { ...process.env, NODE_V8_COVERAGE: coverage } });
+    const execution = runNode(['--import', new URL('../lib/core.mjs', import.meta.url).href, '--input-type=module', '-e', `const { subject } = await import(${JSON.stringify(pathToFileURL(subject).href)}); for (let value = 0; value <= 5; value += 1) subject(value);`], { cwd: project, env: { ...process.env, QUALITY_GATE_V8_CAPTURE: coverage } });
     assert.equal(execution.status, 0, execution.stderr);
     const report = await measureFiles(['subject.mjs'], { projectRoot: project, base, coverageDirectory: coverage });
     assert.equal(report.changedMetrics[0].crap, 6);
@@ -125,14 +125,14 @@ test('a function absent at base is new and enforced', async () => {
   assert.deepEqual(verdict, { failures: [], unverified: [] });
 });
 
-test('a pass-through edit inside a cc=7 legacy function is legacy-unchanged: reported, never failed, never unverified', async () => {
+test('an equal-complexity legacy edit keeps its classification and fails or stays unverified', async () => {
   const passThrough = legacyAtBase.replace('total += 1', 'total += 10');
   const scored = await classifiedAgainstLegacyBase(passThrough, { coverage: 0 });
   assert.deepEqual(scored.byName, { legacy: 'legacy-unchanged' });
-  assert.deepEqual(scored.verdict, { failures: [], unverified: [] });
+  assert.equal(scored.verdict.failures.length, 1);
   const unmeasured = await classifiedAgainstLegacyBase(passThrough, { unverified: 'no suite loaded this file' });
   assert.deepEqual(unmeasured.byName, { legacy: 'legacy-unchanged' });
-  assert.deepEqual(unmeasured.verdict, { failures: [], unverified: [] });
+  assert.equal(unmeasured.verdict.unverified.length, 1);
 });
 
 test('a legacy function that gains a branch is modified-raised and fails at or above six', async () => {
@@ -141,19 +141,19 @@ test('a legacy function that gains a branch is modified-raised and fails at or a
   assert.deepEqual(verdict.failures, ['legacy.mjs:1 legacy cc=8 coverage=100.00% CRAP=8.0000']);
 });
 
-test('the added branch moved into a new helper above the caller passes while the legacy caller stays informational', async () => {
+test('a new helper cannot exempt its physically modified legacy caller', async () => {
   const { byName, verdict } = await classifiedAgainstLegacyBase(`function bonus(item) {\n  return item.f ? 6 : 0;\n}\n${legacyAtBase.replace('  }\n  return', '    total += bonus(item);\n  }\n  return')}`);
   assert.deepEqual(byName, { bonus: 'new', legacy: 'legacy-unchanged' });
-  assert.deepEqual(verdict, { failures: [], unverified: [] });
+  assert.deepEqual(verdict.failures, ['legacy.mjs:4 legacy cc=7 coverage=100.00% CRAP=7.0000']);
 });
 
-test('named build records cover their source function and exclude unrelated names or absent ranges', () => {
+test('unbound named build records never establish source ownership', () => {
   const descriptor = { identity: '<root>/FunctionDeclaration:subject#0', parent: '<root>', name: 'subject', start: 0, end: 10 };
   const source = { descriptors: [descriptor], records: [] };
   const matched = { functionName: 'subject', ranges: [{ startOffset: 100, endOffset: 110, count: 1 }] };
   const unrelated = { functionName: 'another', ranges: [{ startOffset: 100, endOffset: 110, count: 1 }] };
-  assert.deepEqual(functionCoverage(descriptor, [source, { records: [matched, unrelated, { functionName: 'subject', ranges: [] }] }]), { coverage: 1 });
-  assert.deepEqual(functionCoverage(descriptor, [source, { records: [unrelated] }]), { coverage: 0 });
+  assert.match(functionCoverage(descriptor, [source, { records: [matched, unrelated, { functionName: 'subject', ranges: [] }] }]).unverified, /capture binding/);
+  assert.match(functionCoverage(descriptor, [source, { records: [unrelated] }]).unverified, /capture binding/);
 });
 
 test('the measurement entry refuses incomplete arguments', () => {
