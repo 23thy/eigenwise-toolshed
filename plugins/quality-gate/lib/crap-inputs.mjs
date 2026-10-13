@@ -73,7 +73,7 @@ export function gateSettings(options, config) {
     pythonPolicy: policy, pythonOracles: pythonOracles(Object.hasOwn(options, "pythonOracles") ? options.pythonOracles : config.pythonOracles, policy),
     sources: config.sources?.length ? config.sources : ['.'], exclude: firstDefined([config.exclude, []]),
     base: firstDefined([options.base, config.base, options.ratchet, config.ratchet]),
-    lcov: firstDefined([options.lcov, config.lcov]), coverageCommand: firstDefined([options.coverageCommand, config.coverageCommand]),
+    lcov: options.lcov, fallbackLcov: config.lcov, coverageCommand: firstDefined([options.coverageCommand, config.coverageCommand]),
     usedDeprecatedRatchet: !firstDefined([options.base, config.base]) && Boolean(firstDefined([options.ratchet, config.ratchet])),
   };
 }

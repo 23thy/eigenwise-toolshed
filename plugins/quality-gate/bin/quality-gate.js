@@ -37,9 +37,14 @@ Comments and formatting count; equal/lowered complexity never exempts a changed 
 Untouched bodies and independently edited nested bodies do not charge their parents.
 --base defaults to the local develop, main or master branch; HEAD means score all selected bodies.
 --cc-only checks the complexity floor without running coverage; it cannot prove a full CRAP pass.
---lcov requires a sibling <lcov>.sources.json SHA-256 map from the same-byte coverage capture.
+--lcov overrides both isolated command output and config lcov. Config lcov is a fallback
+behind fresh isolated command output, then coverage/lcov.info when unset.
+Without a command, existing LCOV requires a sibling <lcov>.sources.json SHA-256 map
+from the same-byte coverage capture.
 --coverage-command captures source hashes and requires fresh LCOV. It sets QUALITY_GATE_COVERAGE_DIR
 and QUARTERMASTER_COVERAGE_DIR to an empty isolated directory; write lcov.info there.
+Existing explicit or fallback output must be rewritten during the command. Missing or
+invalid selected output stays unverified; it never silently selects a stale fallback.
 Vitest projects need their own provider's LCOV; raw NODE_V8_COVERAGE misses vite-node modules.
 Exit codes for crap: 0 passed/nothing to score/informational-only, 1 score failure, 2 unverified/prerequisite.
 Receipts, including unverified runs, go to .claude/quality-gate/receipts/<head-sha>.json.

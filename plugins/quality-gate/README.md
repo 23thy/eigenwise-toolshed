@@ -71,7 +71,7 @@ Use locally installed `coverage.py` (for example `pipx install coverage`) to gen
 
 ## Same-byte coverage
 
-`--coverage-command` runs in the measured tree with a 5-minute timeout. Sources are hashed before and after; a source edit invalidates the run. `QUALITY_GATE_COVERAGE_DIR` and the compatible `QUARTERMASTER_COVERAGE_DIR` name a fresh empty report directory. Write `lcov.info` there, leaving config `lcov` unset. An explicit LCOV path wins; otherwise isolated output wins over `coverage/lcov.info`. Existing fallback or explicit output must be rewritten during the command.
+`--coverage-command` runs in the measured tree with a 5-minute timeout. Sources are hashed before and after; a source edit invalidates the run. `QUALITY_GATE_COVERAGE_DIR` and the compatible `QUARTERMASTER_COVERAGE_DIR` name a fresh empty report directory. Write `lcov.info` there. Explicit CLI `--lcov` wins over isolated output and config. Otherwise isolated output wins over config `lcov`, which is a fallback (default `coverage/lcov.info`). Without a command, the CLI path, configured path or default is read in that order. Existing fallback or explicit output must be rewritten during the command. Missing or invalid selected output stays unverified; a stale configured file never replaces fresh isolated output.
 
 For pre-existing LCOV, supply a sibling `<lcov>.sources.json` containing SHA-256 hashes captured alongside that coverage, keyed by project-relative source path:
 
