@@ -2,7 +2,9 @@
 // SessionStart waits only for this worker's handoff deadline, so store maintenance
 // cannot make Claude discard the briefing with the hook's entire stdout.
 import type { HookInput } from './shared/input.js';
-import { runtimeModule } from './shared/paths.js';
+import { runtimeModule, pluginRoot } from './shared/paths.js';
+import path from 'node:path';
+import { protectSweepFlight, releaseSweepFlight, sweepFlightOwned } from './shared/sweep-flight.js';
 import { sweepWorktrees, unregisterSweepSession, withWorktreeSweepLock } from './shared/worktree-sweep.js';
 import { appendReport, writeReport } from './shared/sweep-handoff.js';
 
@@ -74,9 +76,41 @@ async function sessionEndSweep(data: HookInput): Promise<void> {
   }
 }
 
+function workerDeadlineMilliseconds(): number {
+  const configured = Number(process.env.SIDEQUEST_SWEEP_WORKER_DEADLINE_MS);
+  return Number.isFinite(configured) && configured > 0 ? Math.min(configured, 60_000) : 60_000;
+}
+
+async function superviseSweep(cwd: string, token: string): Promise<void> {
+  if (!sweepFlightOwned(cwd, token)) return;
+  const { runOwnedPhase } = require(path.join(pluginRoot(), 'scripts', 'owned-process-tree.js')) as {
+    runOwnedPhase(options: {
+      command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; timeoutMilliseconds: number;
+      onPhaseStarted(owner: { ownerPid: number; ownedGroupId: number | null }): void;
+    }): Promise<{ timedOut: boolean; cleanupError: string | null; status: number | null }>;
+  };
+  protectSweepFlight(cwd, token);
+  const result = await runOwnedPhase({
+    command: process.execPath,
+    args: [path.join(pluginRoot(), 'hooks', 'sweep-worktrees.js'), '--cwd', cwd, '--session', argument('session')],
+    // The project directory can be gone (a removed worktree); spawning inside it fails with ENOENT.
+    cwd: process.cwd(),
+    env: process.env,
+    timeoutMilliseconds: workerDeadlineMilliseconds(),
+    onPhaseStarted: ({ ownerPid, ownedGroupId }) => protectSweepFlight(cwd, token, ownedGroupId === null ? ownerPid : -ownedGroupId),
+  });
+  if (result.timedOut) writeReport(cwd, ['sidequest: worktree sweep reached its worker deadline; owned process-tree cleanup was requested.']);
+  if (result.cleanupError) {
+    protectSweepFlight(cwd, token);
+    throw new Error(result.cleanupError);
+  }
+  releaseSweepFlight(cwd, token);
+}
+
 async function main(): Promise<void> {
   const cwd = argument('cwd') || process.cwd();
   const data = { cwd, session_id: argument('session') };
+  if (argument('supervise')) return superviseSweep(cwd, argument('supervise'));
   if (argument('mode') === 'session-end') return sessionEndSweep(data);
   writeReport(cwd, await sessionStartMaintenance(data));
 }

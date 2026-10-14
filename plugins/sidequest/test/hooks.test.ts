@@ -3040,7 +3040,8 @@ test('session-end reclaims an unbound old patch-equivalent worktree and stays fa
   assert.equal(fs.existsSync(worktree), false);
   assert.equal(projectGit(['branch', '--list', branch]), '');
   assert.doesNotThrow(() => runHook(SESSION_END, { session_id: 'session-end-fail-soft' }, { CLAUDE_PLUGIN_ROOT: path.join(project, 'missing-plugin') }));
-  fs.rmSync(project, { recursive: true, force: true });
+  // The detached worker can still be exiting after its reclaim is visible, holding a Windows handle on the project.
+  fs.rmSync(project, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 // GH-439: SessionEnd ran the sweep inline, and Claude Code gives SessionEnd about 1.5 s (#400), so a
@@ -3938,7 +3939,7 @@ test('session-start reclaims a clean old worktree without lease identity', async
 // only up to a deadline. These pin the deadline path: a slow sweep must cost the
 // session its notices, never its whole injected context.
 function sweepReportFile(home: string, cwd: string): string {
-  const key = require('node:crypto').createHash('sha1').update(path.resolve(cwd)).digest('hex').slice(0, 16);
+  const key = require('node:crypto').createHash('sha1').update(worktreeLease.canonicalPath(cwd)).digest('hex').slice(0, 16);
   return path.join(home, 'sweep-reports', `${key}.json`);
 }
 
