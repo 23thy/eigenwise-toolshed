@@ -143,6 +143,13 @@ for (const [label, text, expectedExitCode, expectedCoverage, reason] of [
   });
 }
 
+test('Python sources with non-ASCII text are scored, not mangled by the locale codec', () => {
+  const rows = pythonDescriptors('def subject():\n    return "café \u0081"\n', 'unicode.py', pluginRoot);
+  assert.equal(rows[0].name, 'subject');
+  assert.equal(rows[0].complexity, 1);
+  assert.equal(rows[0].unverified, undefined);
+});
+
 test('Python syntax failures are per-file unverified rows and runtime remains available', () => {
   let rows;
   assert.doesNotThrow(() => { rows = pythonDescriptors('def broken(:', 'broken.py', pluginRoot); });
