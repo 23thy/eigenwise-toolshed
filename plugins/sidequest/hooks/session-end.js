@@ -91,10 +91,22 @@ function runtimeModule(name) {
 
 // src/hooks/shared/sweep-handoff.ts
 var import_node_child_process = require("node:child_process");
-var import_node_crypto = __toESM(require("node:crypto"));
-var import_node_fs2 = __toESM(require("node:fs"));
+var import_node_crypto3 = __toESM(require("node:crypto"));
+var import_node_fs4 = __toESM(require("node:fs"));
 var import_node_os = __toESM(require("node:os"));
+var import_node_path4 = __toESM(require("node:path"));
+
+// src/lib/kernel/worktree.ts
+var import_node_fs2 = __toESM(require("node:fs"));
 var import_node_path2 = __toESM(require("node:path"));
+var import_node_crypto = __toESM(require("node:crypto"));
+
+// src/hooks/shared/sweep-flight.ts
+var import_node_crypto2 = __toESM(require("node:crypto"));
+var import_node_fs3 = __toESM(require("node:fs"));
+var import_node_path3 = __toESM(require("node:path"));
+
+// src/hooks/shared/sweep-handoff.ts
 var HANDOFF_FAILED_NOTICE = "sidequest: worktree sweep could not run, so stale agent worktrees were not collected this session.";
 function sweepCwd(data) {
   return stringField(data, "cwd", "project_dir", "projectDir") || process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -102,7 +114,7 @@ function sweepCwd(data) {
 function detachSessionEndSweep(data) {
   try {
     const child = (0, import_node_child_process.spawn)(process.execPath, [
-      import_node_path2.default.join(pluginRoot(), "hooks", "sweep-worktrees.js"),
+      import_node_path4.default.join(pluginRoot(), "hooks", "sweep-worktrees.js"),
       "--cwd",
       sweepCwd(data),
       "--session",
@@ -121,33 +133,33 @@ function detachSessionEndSweep(data) {
 
 // src/hooks/shared/worktree-sweep.ts
 var import_node_child_process2 = require("node:child_process");
-var import_node_fs4 = __toESM(require("node:fs"));
+var import_node_fs6 = __toESM(require("node:fs"));
 var import_promises = require("node:fs/promises");
 var import_node_os3 = __toESM(require("node:os"));
-var import_node_path4 = __toESM(require("node:path"));
+var import_node_path6 = __toESM(require("node:path"));
 
 // src/lib/worktree-sweep-lock.ts
-var import_node_fs3 = __toESM(require("node:fs"));
+var import_node_fs5 = __toESM(require("node:fs"));
 var import_node_os2 = __toESM(require("node:os"));
-var import_node_path3 = __toESM(require("node:path"));
+var import_node_path5 = __toESM(require("node:path"));
 
 // src/hooks/shared/worktree-sweep.ts
 var DEFAULT_NOT_INTEGRATED_SALVAGE_AGE_HOURS = 7 * 24;
 function stateFile() {
-  const home = String(process.env.SIDEQUEST_HOME || "").trim() || import_node_path4.default.join(import_node_os3.default.homedir(), ".claude", "sidequest");
-  return import_node_path4.default.join(home, "worktree-sweep-sessions.json");
+  const home = String(process.env.SIDEQUEST_HOME || "").trim() || import_node_path6.default.join(import_node_os3.default.homedir(), ".claude", "sidequest");
+  return import_node_path6.default.join(home, "worktree-sweep-sessions.json");
 }
 function readState() {
   try {
-    return JSON.parse(import_node_fs4.default.readFileSync(stateFile(), "utf8"));
+    return JSON.parse(import_node_fs6.default.readFileSync(stateFile(), "utf8"));
   } catch (_) {
     return {};
   }
 }
 function writeState(state) {
   try {
-    import_node_fs4.default.mkdirSync(import_node_path4.default.dirname(stateFile()), { recursive: true });
-    import_node_fs4.default.writeFileSync(stateFile(), JSON.stringify(state), "utf8");
+    import_node_fs6.default.mkdirSync(import_node_path6.default.dirname(stateFile()), { recursive: true });
+    import_node_fs6.default.writeFileSync(stateFile(), JSON.stringify(state), "utf8");
   } catch (_) {
   }
 }

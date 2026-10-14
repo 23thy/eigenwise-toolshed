@@ -56,7 +56,7 @@ export function pythonDescriptors(text, file, root, policy = DEFAULT_PYTHON_POLI
   pythonPolicy(policy);
   pythonOracles(oracles, policy);
   const { command, argumentsList } = pythonRuntime(root);
-  const result = spawnSync(command, [...argumentsList, '-I', adapter], { cwd: root, input: JSON.stringify({ text, file, policy, oracles }), encoding: 'utf8', windowsHide: true, timeout: 30000, maxBuffer: 64 * 1024 * 1024 });
+  const result = spawnSync(command, [...argumentsList, '-I', '-X', 'utf8', adapter], { cwd: root, input: JSON.stringify({ text, file, policy, oracles }), encoding: 'utf8', windowsHide: true, timeout: 30000, maxBuffer: 64 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(`Python source adapter failed for ${file}: ${result.stderr || result.error?.message}. Fix the source or Python runtime, then rerun the gate.`);
   return JSON.parse(result.stdout).rows;
 }
