@@ -61,7 +61,10 @@ function worktreeBindingComparison(failure?: WorktreeCreationBindingFailure): st
     return `Considered ${count} on this board. The nearest dispatch failed predicate \`different_project\`: ${comparison}. WorktreeCreate follows the session id to the board that reserved the creation, but this session owns launched isolated dispatches on more than one board, so it could not tell which and fell back to the spawning checkout. Let the other boards' isolated dispatches reach a terminal state, then re-dispatch this one so the session owns isolated dispatches on a single board.`;
   }
   if (failure?.predicate) {
-    return `Considered ${count}. The nearest dispatch failed predicate \`${failure.predicate}\`: ${comparison}. Run \`sidequest pulse <ref>\` and re-dispatch with recovery evidence.`;
+    const remedy = failure.predicate === 'outcome'
+      ? 're-dispatch first without recovery evidence; use recovery evidence only if the runtime actually died'
+      : 're-dispatch with recovery evidence';
+    return `Considered ${count}. The nearest dispatch failed predicate \`${failure.predicate}\`: ${comparison}. Run \`sidequest pulse <ref>\` and ${remedy}.`;
   }
   return `Considered ${count}. No launched isolated dispatch exists on this board for the hook-supplied session or canonical worktree. Run \`sidequest pulse <ref>\` and re-dispatch with recovery evidence.`;
 }
