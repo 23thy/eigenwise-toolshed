@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { stringField, type HookInput } from './input.js';
 import { pluginRoot } from './paths.js';
+import { canonicalPath } from '../../lib/kernel/worktree.js';
+import { acquireSweepFlight, reclaimSweepFlight, sweepFlightNeedsRecovery, type SweepFlight } from './sweep-flight.js';
 
 // The sweep removes worktrees, backs up dirty ones and prunes branches: dozens of
 // git subprocesses plus recursive directory deletes. Its cost is bimodal — a few
@@ -14,7 +16,7 @@ import { pluginRoot } from './paths.js';
 const DEFAULT_DEADLINE_MS = 2500;
 
 export const DEFERRAL_NOTICE =
-  'sidequest: worktree sweep exceeded its SessionStart budget and is still running in the background.';
+  'sidequest: worktree sweep exceeded its SessionStart budget and is still running in the background. Its worker has a 60-second lifetime limit.';
 
 export type SweepProgress = Readonly<{
   phase: 'idle' | 'classifying' | 'sweeping' | 'complete';
@@ -38,6 +40,9 @@ const EMPTY_SWEEP_PROGRESS: SweepProgress = {
   keptByReason: {},
 };
 
+const PAUSED_FOR_RECOVERY_NOTICE =
+  'sidequest: previous worktree sweep could not confirm owned cleanup. Automatic sweeps remain paused until its recorded ownership is reconciled.';
+
 export const HANDOFF_FAILED_NOTICE =
   'sidequest: worktree sweep could not run, so stale agent worktrees were not collected this session.';
 
@@ -52,7 +57,7 @@ function stateDirectory(): string {
 }
 
 export function reportFile(cwd: string): string {
-  const key = crypto.createHash('sha1').update(path.resolve(cwd || '.')).digest('hex').slice(0, 16);
+  const key = crypto.createHash('sha1').update(canonicalPath(cwd || '.')).digest('hex').slice(0, 16);
   return path.join(stateDirectory(), `${key}.json`);
 }
 
@@ -188,38 +193,64 @@ export function detachSessionEndSweep(data: HookInput): boolean {
 // Always runs the sweep in a detached child and waits only up to the deadline. The
 // child owns the mutating work, so a slow sweep costs the session its deadline
 // rather than its entire injected context.
+function startSweepWorker(data: HookInput, cwd: string, flight: SweepFlight) {
+  const child = spawn(process.execPath, [
+    path.join(pluginRoot(), 'hooks', 'sweep-worktrees.js'),
+    '--cwd', cwd,
+    '--session', stringField(data, 'session_id', 'sessionId'),
+    '--supervise', flight.token,
+  ], { detached: true, stdio: 'ignore', windowsHide: true });
+  child.once('error', flight.release);
+  if (child.pid === undefined) flight.release();
+  else flight.transfer(child.pid);
+  return child;
+}
+
 export async function runSweep(data: HookInput): Promise<string[]> {
   const cwd = sweepCwd(data);
-  const carried = drainReport(cwd) || [];
+  let flight;
+  try {
+    reclaimSweepFlight(cwd);
+    flight = acquireSweepFlight(cwd);
+  } catch {
+    return [HANDOFF_FAILED_NOTICE];
+  }
+  if (!flight) return heldFlightNotices(cwd);
+  return runSweepWorker(data, cwd, flight, drainReport(cwd) || []);
+}
+
+// The live worker writes its report before its supervisor releases the flight, so a
+// start that lands in that window must still collect it instead of leaving it behind.
+function heldFlightNotices(cwd: string): string[] {
+  if (sweepFlightNeedsRecovery(cwd)) return [...(drainReport(cwd) ?? []), PAUSED_FOR_RECOVERY_NOTICE];
+  return drainReport(cwd) ?? [deferralNotice(cwd, readSweepProgress(cwd))];
+}
+
+async function runSweepWorker(data: HookInput, cwd: string, flight: SweepFlight, carried: string[]): Promise<string[]> {
   const budget = deadlineMs();
   writeSweepProgress(cwd, EMPTY_SWEEP_PROGRESS);
   let child;
   try {
-    child = spawn(process.execPath, [
-      path.join(pluginRoot(), 'hooks', 'sweep-worktrees.js'),
-      '--cwd', cwd,
-      '--session', stringField(data, 'session_id', 'sessionId'),
-    ], { detached: true, stdio: 'ignore', windowsHide: true });
+    child = startSweepWorker(data, cwd, flight);
   } catch (_) {
+    flight.release();
     clearSweepProgress(cwd);
     return [...carried, HANDOFF_FAILED_NOTICE];
   }
 
-  const outcome = await new Promise<'exited' | 'deferred' | 'failed'>((resolve) => {
+  const outcome = await waitForSweep(child, budget);
+  if (outcome === 'deferred') {
+    child.unref();
+    return [...carried, deferralNotice(cwd, readSweepProgress(cwd))];
+  }
+  return [...carried, ...(drainReport(cwd) ?? [HANDOFF_FAILED_NOTICE])];
+}
+
+function waitForSweep(child: ReturnType<typeof spawn>, budget: number): Promise<'exited' | 'deferred' | 'failed'> {
+  return new Promise((resolve) => {
     if (budget === 0) return resolve('deferred');
     const timer = setTimeout(() => resolve('deferred'), budget);
     child.once('exit', () => { clearTimeout(timer); resolve('exited'); });
     child.once('error', () => { clearTimeout(timer); resolve('failed'); });
   });
-
-  if (outcome === 'failed') {
-    clearSweepProgress(cwd);
-    return [...carried, HANDOFF_FAILED_NOTICE];
-  }
-  if (outcome === 'deferred') {
-    child.unref();
-    return [...carried, deferralNotice(cwd, readSweepProgress(cwd))];
-  }
-  const report = drainReport(cwd);
-  return report === null ? [...carried, HANDOFF_FAILED_NOTICE] : [...carried, ...report];
 }

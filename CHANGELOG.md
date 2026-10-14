@@ -8,6 +8,24 @@ Releases before v3.208.0 predate this file and are not backfilled; `git log` is 
 those. Entries are generated from `.release/unreleased/*.md` by `scripts/release/cut.mjs`, so
 nothing here is hand-written.
 
+## v3.598.0 (2026-10-14)
+
+### quality-gate 0.3.0 → 0.3.1
+
+#### Fixes
+
+- Quality Gate reads Python sources as UTF-8 under isolated mode (SQ-3698)
+  The Python source adapter runs with `-I`, which drops `PYTHONIOENCODING`, so on Windows the request was decoded with the ANSI code page: every non-ASCII character in a measured file was mangled and a C1 control character made `ast.parse` fail with `UnicodeEncodeError: surrogates not allowed`. The adapter now runs with `-X utf8`, so such files are scored normally.
+
+### sidequest 5.11.1 → 5.11.2
+
+#### Fixes
+
+- Fix WorktreeCreate recovery guidance (SQ-3695)
+  Outcome predicate refusals now recommend plain re-dispatch first, reserving recovery evidence for runtimes that actually died.
+- Keep SessionStart worktree sweeps single-flight and deadline-owned (GH-526) (SQ-3697)
+  Overlapping SessionStart hooks for the same project now share one detached maintenance sweep. Its worker has a finite deadline that ends its authentically owned process tree. Dead ownership can be reclaimed without releasing a successor, and uncertain descendant cleanup keeps automatic sweeps paused. Equivalent Windows project spellings share the same flight.
+
 ## v3.597.0 (2026-10-13)
 
 ### sidequest 5.11.0 → 5.11.1

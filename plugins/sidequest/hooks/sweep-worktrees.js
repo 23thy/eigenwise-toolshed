@@ -32,12 +32,19 @@ function runtimeModule(name) {
   return import_node_path.default.join(pluginRoot(), "lib", `${name}.js`);
 }
 
-// src/hooks/shared/worktree-sweep.ts
-var import_node_child_process2 = require("node:child_process");
+// src/hooks/sweep-worktrees.ts
+var import_node_path7 = __toESM(require("node:path"));
+
+// src/hooks/shared/sweep-flight.ts
+var import_node_crypto3 = __toESM(require("node:crypto"));
 var import_node_fs4 = __toESM(require("node:fs"));
-var import_promises = require("node:fs/promises");
-var import_node_os3 = __toESM(require("node:os"));
-var import_node_path4 = __toESM(require("node:path"));
+
+// src/hooks/shared/sweep-handoff.ts
+var import_node_child_process = require("node:child_process");
+var import_node_crypto2 = __toESM(require("node:crypto"));
+var import_node_fs3 = __toESM(require("node:fs"));
+var import_node_os = __toESM(require("node:os"));
+var import_node_path3 = __toESM(require("node:path"));
 
 // src/hooks/shared/input.ts
 var import_node_fs = __toESM(require("node:fs"));
@@ -72,12 +79,32 @@ function stringField(input, ...names) {
   return "";
 }
 
-// src/hooks/shared/sweep-handoff.ts
-var import_node_child_process = require("node:child_process");
-var import_node_crypto = __toESM(require("node:crypto"));
+// src/lib/kernel/worktree.ts
 var import_node_fs2 = __toESM(require("node:fs"));
-var import_node_os = __toESM(require("node:os"));
 var import_node_path2 = __toESM(require("node:path"));
+var import_node_crypto = __toESM(require("node:crypto"));
+function platformPath(value) {
+  return process.platform === "win32" ? value.toLowerCase() : value;
+}
+function canonicalPath(value) {
+  const gitBashDrive = process.platform === "win32" ? /^\/([a-zA-Z])(?=\/|$)/.exec(value) : null;
+  const resolved = import_node_path2.default.resolve(gitBashDrive ? `${gitBashDrive[1]}:${value.slice(2)}` : value);
+  const missing = [];
+  let existing = resolved;
+  while (!import_node_fs2.default.existsSync(existing)) {
+    const parent = import_node_path2.default.dirname(existing);
+    if (parent === existing) return platformPath(resolved);
+    missing.unshift(import_node_path2.default.basename(existing));
+    existing = parent;
+  }
+  try {
+    return platformPath(import_node_path2.default.join(import_node_fs2.default.realpathSync.native(existing), ...missing));
+  } catch {
+    return platformPath(resolved);
+  }
+}
+
+// src/hooks/shared/sweep-handoff.ts
 var EMPTY_SWEEP_PROGRESS = {
   phase: "idle",
   candidates: 0,
@@ -89,12 +116,12 @@ var EMPTY_SWEEP_PROGRESS = {
   keptByReason: {}
 };
 function stateDirectory() {
-  const home = String(process.env.SIDEQUEST_HOME || "").trim() || import_node_path2.default.join(import_node_os.default.homedir(), ".claude", "sidequest");
-  return import_node_path2.default.join(home, "sweep-reports");
+  const home = String(process.env.SIDEQUEST_HOME || "").trim() || import_node_path3.default.join(import_node_os.default.homedir(), ".claude", "sidequest");
+  return import_node_path3.default.join(home, "sweep-reports");
 }
 function reportFile(cwd) {
-  const key = import_node_crypto.default.createHash("sha1").update(import_node_path2.default.resolve(cwd || ".")).digest("hex").slice(0, 16);
-  return import_node_path2.default.join(stateDirectory(), `${key}.json`);
+  const key = import_node_crypto2.default.createHash("sha1").update(canonicalPath(cwd || ".")).digest("hex").slice(0, 16);
+  return import_node_path3.default.join(stateDirectory(), `${key}.json`);
 }
 function progressFile(cwd) {
   return reportFile(cwd).replace(/\.json$/, ".progress.json");
@@ -119,21 +146,21 @@ function normalizedProgress(value) {
 }
 function writeSweepProgress(cwd, progress) {
   try {
-    import_node_fs2.default.mkdirSync(stateDirectory(), { recursive: true });
-    import_node_fs2.default.writeFileSync(progressFile(cwd), JSON.stringify(normalizedProgress(progress)));
+    import_node_fs3.default.mkdirSync(stateDirectory(), { recursive: true });
+    import_node_fs3.default.writeFileSync(progressFile(cwd), JSON.stringify(normalizedProgress(progress)));
   } catch (_) {
   }
 }
 function clearSweepProgress(cwd) {
   try {
-    import_node_fs2.default.rmSync(progressFile(cwd), { force: true });
+    import_node_fs3.default.rmSync(progressFile(cwd), { force: true });
   } catch (_) {
   }
 }
 function writeReport(cwd, notices) {
   try {
-    import_node_fs2.default.mkdirSync(stateDirectory(), { recursive: true });
-    import_node_fs2.default.writeFileSync(reportFile(cwd), JSON.stringify({ notices, finishedAt: (/* @__PURE__ */ new Date()).toISOString() }));
+    import_node_fs3.default.mkdirSync(stateDirectory(), { recursive: true });
+    import_node_fs3.default.writeFileSync(reportFile(cwd), JSON.stringify({ notices, finishedAt: (/* @__PURE__ */ new Date()).toISOString() }));
   } catch (_) {
   }
 }
@@ -141,11 +168,11 @@ function drainReport(cwd) {
   const file = reportFile(cwd);
   let raw;
   try {
-    raw = import_node_fs2.default.readFileSync(file, "utf8");
+    raw = import_node_fs3.default.readFileSync(file, "utf8");
   } catch (_) {
     return null;
   }
-  import_node_fs2.default.rmSync(file, { force: true });
+  import_node_fs3.default.rmSync(file, { force: true });
   clearSweepProgress(cwd);
   try {
     const parsed = JSON.parse(raw);
@@ -160,13 +187,46 @@ function appendReport(cwd, notices) {
   writeReport(cwd, [...drainReport(cwd) || [], ...notices]);
 }
 
+// src/hooks/shared/sweep-flight.ts
+var import_node_path4 = __toESM(require("node:path"));
+function readOwner(file) {
+  try {
+    const match = import_node_fs4.default.readFileSync(file, "utf8").match(/^(\d+):([a-f0-9-]{36})(?::(-?\d+))?$/);
+    return match ? { pid: Number(match[1]), token: match[2] || "", owner: match[3] === void 0 ? void 0 : Number(match[3]) } : null;
+  } catch {
+    return null;
+  }
+}
+function flightFile(cwd) {
+  return reportFile(cwd).replace(/\.json$/, ".flight");
+}
+function releaseSweepFlight(cwd, token) {
+  const file = flightFile(cwd);
+  if (readOwner(file)?.token === token) import_node_fs4.default.rmSync(file, { force: true });
+}
+function sweepFlightOwned(cwd, token) {
+  const owner = readOwner(flightFile(cwd));
+  return owner?.token === token;
+}
+function protectSweepFlight(cwd, token, owner = 0) {
+  const file = flightFile(cwd);
+  if (readOwner(file)?.token === token) import_node_fs4.default.writeFileSync(file, `${process.pid}:${token}:${owner}`);
+}
+
+// src/hooks/shared/worktree-sweep.ts
+var import_node_child_process2 = require("node:child_process");
+var import_node_fs6 = __toESM(require("node:fs"));
+var import_promises = require("node:fs/promises");
+var import_node_os3 = __toESM(require("node:os"));
+var import_node_path6 = __toESM(require("node:path"));
+
 // src/lib/worktree-sweep-lock.ts
-var import_node_fs3 = __toESM(require("node:fs"));
+var import_node_fs5 = __toESM(require("node:fs"));
 var import_node_os2 = __toESM(require("node:os"));
-var import_node_path3 = __toESM(require("node:path"));
+var import_node_path5 = __toESM(require("node:path"));
 function sweepLockFile() {
-  const home = String(process.env.SIDEQUEST_HOME || "").trim() || import_node_path3.default.join(import_node_os2.default.homedir(), ".claude", "sidequest");
-  return import_node_path3.default.join(home, "worktree-sweep.lock");
+  const home = String(process.env.SIDEQUEST_HOME || "").trim() || import_node_path5.default.join(import_node_os2.default.homedir(), ".claude", "sidequest");
+  return import_node_path5.default.join(home, "worktree-sweep.lock");
 }
 function processAlive(pid) {
   try {
@@ -179,15 +239,15 @@ function processAlive(pid) {
 function lockHolderAlive(file) {
   let holder = 0;
   try {
-    holder = Number(import_node_fs3.default.readFileSync(file, "utf8"));
+    holder = Number(import_node_fs5.default.readFileSync(file, "utf8"));
   } catch (_) {
   }
   return Number.isInteger(holder) && holder > 0 && processAlive(holder);
 }
 function createSweepLock(file) {
   try {
-    import_node_fs3.default.mkdirSync(import_node_path3.default.dirname(file), { recursive: true });
-    import_node_fs3.default.writeFileSync(file, String(process.pid), { flag: "wx" });
+    import_node_fs5.default.mkdirSync(import_node_path5.default.dirname(file), { recursive: true });
+    import_node_fs5.default.writeFileSync(file, String(process.pid), { flag: "wx" });
     return "acquired";
   } catch (error) {
     return error?.code === "EEXIST" ? "held" : "unwritable";
@@ -195,13 +255,13 @@ function createSweepLock(file) {
 }
 function removeStaleSweepLock(file) {
   try {
-    if (!lockHolderAlive(file)) import_node_fs3.default.rmSync(file, { force: true });
+    if (!lockHolderAlive(file)) import_node_fs5.default.rmSync(file, { force: true });
   } catch (_) {
   }
 }
 function releaseSweepLock(file) {
   try {
-    if (import_node_fs3.default.readFileSync(file, "utf8") === String(process.pid)) import_node_fs3.default.rmSync(file, { force: true });
+    if (import_node_fs5.default.readFileSync(file, "utf8") === String(process.pid)) import_node_fs5.default.rmSync(file, { force: true });
   } catch (_) {
   }
 }
@@ -267,7 +327,7 @@ function referencesWorktree(command, worktreePath) {
 }
 function worktreeRemovalFailureNotice(failure, options = {}) {
   const notice = `could not remove ${failure.path || "a git entry"}: ${failure.message}`;
-  if ((options.platform ?? process.platform) !== "win32" || !failure.path || !(options.existsSync || import_node_fs4.default.existsSync)(failure.path)) return notice;
+  if ((options.platform ?? process.platform) !== "win32" || !failure.path || !(options.existsSync || import_node_fs6.default.existsSync)(failure.path)) return notice;
   const processes = (options.listProcesses || windowsProcesses)().filter((entry) => referencesWorktree(entry.command, failure.path));
   if (!processes.length) return notice;
   const details = processes.map((entry) => {
@@ -278,20 +338,20 @@ function worktreeRemovalFailureNotice(failure, options = {}) {
   return `${notice}. Processes still using it: ${details.join("; ")}. End those PIDs and re-run the sweep.`;
 }
 function stateFile() {
-  const home = String(process.env.SIDEQUEST_HOME || "").trim() || import_node_path4.default.join(import_node_os3.default.homedir(), ".claude", "sidequest");
-  return import_node_path4.default.join(home, "worktree-sweep-sessions.json");
+  const home = String(process.env.SIDEQUEST_HOME || "").trim() || import_node_path6.default.join(import_node_os3.default.homedir(), ".claude", "sidequest");
+  return import_node_path6.default.join(home, "worktree-sweep-sessions.json");
 }
 function readState() {
   try {
-    return JSON.parse(import_node_fs4.default.readFileSync(stateFile(), "utf8"));
+    return JSON.parse(import_node_fs6.default.readFileSync(stateFile(), "utf8"));
   } catch (_) {
     return {};
   }
 }
 function writeState(state) {
   try {
-    import_node_fs4.default.mkdirSync(import_node_path4.default.dirname(stateFile()), { recursive: true });
-    import_node_fs4.default.writeFileSync(stateFile(), JSON.stringify(state), "utf8");
+    import_node_fs6.default.mkdirSync(import_node_path6.default.dirname(stateFile()), { recursive: true });
+    import_node_fs6.default.writeFileSync(stateFile(), JSON.stringify(state), "utf8");
   } catch (_) {
   }
 }
@@ -302,15 +362,15 @@ function projectCommand(project) {
   return `node "${pluginRoot()}/bin/sidequest.js" board-config --project "${project.path}" --integration-branch <branch>`;
 }
 function sessionWorktreePath(start) {
-  const resolved = import_node_path4.default.resolve(start);
+  const resolved = import_node_path6.default.resolve(start);
   let candidate = resolved;
   for (; ; ) {
     try {
-      if (import_node_fs4.default.existsSync(import_node_path4.default.join(candidate, ".git"))) return candidate;
+      if (import_node_fs6.default.existsSync(import_node_path6.default.join(candidate, ".git"))) return candidate;
     } catch (_) {
       return resolved;
     }
-    const parent = import_node_path4.default.dirname(candidate);
+    const parent = import_node_path6.default.dirname(candidate);
     if (parent === candidate) return resolved;
     candidate = parent;
   }
@@ -402,7 +462,7 @@ async function sweepWorktrees(data, includeKnownProjects) {
   for (const project of projects) {
     const isCurrentProject = project.slug === current.slug;
     try {
-      await (0, import_promises.stat)(import_node_path4.default.join(project.path, ".git"));
+      await (0, import_promises.stat)(import_node_path6.default.join(project.path, ".git"));
     } catch (_) {
       continue;
     }
@@ -505,9 +565,34 @@ async function sessionEndSweep(data) {
     unregisterSweepSession(data);
   }
 }
+function workerDeadlineMilliseconds() {
+  const configured = Number(process.env.SIDEQUEST_SWEEP_WORKER_DEADLINE_MS);
+  return Number.isFinite(configured) && configured > 0 ? Math.min(configured, 6e4) : 6e4;
+}
+async function superviseSweep(cwd, token) {
+  if (!sweepFlightOwned(cwd, token)) return;
+  const { runOwnedPhase } = require(import_node_path7.default.join(pluginRoot(), "scripts", "owned-process-tree.js"));
+  protectSweepFlight(cwd, token);
+  const result = await runOwnedPhase({
+    command: process.execPath,
+    args: [import_node_path7.default.join(pluginRoot(), "hooks", "sweep-worktrees.js"), "--cwd", cwd, "--session", argument("session")],
+    // The project directory can be gone (a removed worktree); spawning inside it fails with ENOENT.
+    cwd: process.cwd(),
+    env: process.env,
+    timeoutMilliseconds: workerDeadlineMilliseconds(),
+    onPhaseStarted: ({ ownerPid, ownedGroupId }) => protectSweepFlight(cwd, token, ownedGroupId === null ? ownerPid : -ownedGroupId)
+  });
+  if (result.timedOut) writeReport(cwd, ["sidequest: worktree sweep reached its worker deadline; owned process-tree cleanup was requested."]);
+  if (result.cleanupError) {
+    protectSweepFlight(cwd, token);
+    throw new Error(result.cleanupError);
+  }
+  releaseSweepFlight(cwd, token);
+}
 async function main() {
   const cwd = argument("cwd") || process.cwd();
   const data = { cwd, session_id: argument("session") };
+  if (argument("supervise")) return superviseSweep(cwd, argument("supervise"));
   if (argument("mode") === "session-end") return sessionEndSweep(data);
   writeReport(cwd, await sessionStartMaintenance(data));
 }

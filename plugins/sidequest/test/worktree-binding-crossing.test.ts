@@ -28,6 +28,12 @@ const worktrees = require('../lib/worktrees.js');
 const worktreeLease = require('../lib/kernel/worktree.js');
 const { crossedWorktreeRefusalMessage, worktreeCreationRefusalMessage } = require('../lib/refusal-guidance.js');
 
+test('an outcome predicate refusal tries plain redispatch before recovery evidence', () => {
+  const message = worktreeCreationRefusalMessage('dispatch_binding_unavailable', 'repo', { predicate: 'outcome' });
+  assert.match(message, /re-dispatch first without recovery evidence/);
+  assert.match(message, /recovery evidence only if the runtime actually died/);
+});
+
 const PLUGIN_ROOT = path.resolve(__dirname, '..');
 const CLI = path.join(PLUGIN_ROOT, 'bin', 'sidequest.js');
 
