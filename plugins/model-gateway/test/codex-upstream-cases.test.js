@@ -163,28 +163,96 @@ test('#190: a live 429 carries its Retry-After into readiness, lifts on time, an
   assert.equal((await codexReadiness(port)).upstreamBlocked, null, 'a successful request clears an hour-long block at once');
 });
 
-test('#192: a Codex turn that completed with no output answers an empty end_turn, not a retryable 503', async (t) => {
+test('#192: an empty Codex completion is a typed non-retryable failure, never a successful turn', async (t) => {
+  let attempts = 0;
   const answers = [EMPTY_COMPLETION, EMPTY_COMPLETION, JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'upstream overloaded' } })];
   const { port } = await workerBehind(t, (res) => {
+    attempts++;
     res.writeHead(503, { 'content-type': 'application/json' });
     res.end(answers.shift());
   });
 
-  const streamed = await request(port, 'POST', '/v1/messages', codexMessage(true));
-  assert.equal(streamed.status, 200);
-  assert.match(streamed.headers['content-type'], /text\/event-stream/);
-  const events = streamed.body.split('\n').filter((line) => line.startsWith('data: ')).map((line) => JSON.parse(line.slice(6)));
-  assert.deepEqual(events.map((event) => event.type), ['message_start', 'message_delta', 'message_stop']);
-  assert.equal(events[0].message.model, 'claude-gpt-5.6-sol');
-  assert.deepEqual(events[0].message.content, []);
-  assert.equal(events[1].delta.stop_reason, 'end_turn');
-
-  const buffered = await request(port, 'POST', '/v1/messages', codexMessage(false));
-  assert.equal(buffered.status, 200);
-  const message = JSON.parse(buffered.body);
-  assert.deepEqual([message.type, message.content, message.stop_reason], ['message', [], 'end_turn']);
-
+  for (const stream of [true, false]) {
+    const response = await request(port, 'POST', '/v1/messages', codexMessage(stream));
+    assert.equal(response.status, 422);
+    assert.match(response.headers['content-type'], /application\/json/);
+    assert.equal(response.headers['x-model-gateway-upstream-status'], '503');
+    const failure = JSON.parse(response.body);
+    assert.equal(failure.type, 'error');
+    assert.equal(failure.error.type, 'invalid_request_error');
+    assert.equal(failure.error.details.error_code, 'empty_codex_completion');
+    assert.equal(failure.error.details.retryable, false);
+    assert.doesNotMatch(response.body, /end_turn|message_stop/);
+  }
+  assert.equal(attempts, 2, 'exactly one upstream call per request; no retry spin');
+  assert.equal((await codexReadiness(port)).upstreamUnavailable.statusCode, 503);
   assert.equal((await request(port, 'POST', '/v1/messages', codexMessage(true))).status, 503, 'any other 503 still reaches the client');
+});
+
+function planToolResponse(blocks, stream) {
+  const message = { id: 'm_plan', type: 'message', role: 'assistant', model: 'gpt-5.6-sol', content: blocks, stop_reason: 'tool_use' };
+  if (!stream) return JSON.stringify(message);
+  return sse([
+    { type: 'message_start', message: { ...message, content: [], stop_reason: null } },
+    ...blocks.flatMap((content_block, index) => [
+      { type: 'content_block_start', index, content_block },
+      { type: 'content_block_stop', index },
+    ]),
+    { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+    { type: 'message_stop' },
+  ]);
+}
+
+test('blocked-only plan calls fail explicitly; mixed permitted calls survive in JSON and SSE', async (t) => {
+  let blocks;
+  let stream;
+  let attempts = 0;
+  const { port } = await workerBehind(t, (res) => {
+    attempts++;
+    res.writeHead(200, { 'content-type': stream ? 'text/event-stream' : 'application/json' });
+    res.end(planToolResponse(blocks, stream));
+  });
+
+  for (stream of [false, true]) {
+    for (const mixed of [false, true]) {
+      blocks = [
+        { type: 'text', text: 'I will make a plan.' },
+        { type: 'tool_use', id: 'plan', name: 'EnterPlanMode', input: {} },
+        { type: 'tool_use', id: 'exit', name: 'ExitPlanMode', input: {} },
+      ];
+      if (mixed) blocks.push({ type: 'tool_use', id: 'read', name: 'Read', input: { file_path: '/fixture' } });
+      const response = await request(port, 'POST', '/v1/messages', codexMessage(stream));
+      assert.doesNotMatch(response.body, /EnterPlanMode|ExitPlanMode|end_turn/);
+      if (mixed) {
+        assert.equal(response.status, 200);
+        assert.match(response.body, /"name":"Read"/);
+        assert.match(response.body, /"stop_reason":"tool_use"/);
+        assert.doesNotMatch(response.body, /"type":"error"/);
+      } else {
+        assert.equal(response.status, stream ? 200 : 422);
+        assert.match(response.body, /blocked_plan_tools/);
+        assert.match(response.body, /"retryable":false/);
+        assert.doesNotMatch(response.body, /"type":"message_stop"|"stop_reason":"tool_use"/);
+      }
+    }
+  }
+  assert.equal(attempts, 4, 'blocked plan calls never cause gateway retries');
+  assert.equal((await codexReadiness(port)).upstreamUnavailable, null, 'the final permitted call succeeds');
+});
+
+test('blocked-only plan calls fail even when the upstream omits stop events', async (t) => {
+  const { port } = await workerBehind(t, (res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(sse([
+      { type: 'message_start', message: { id: 'm_plan', type: 'message', content: [] } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'plan', name: 'EnterPlanMode', input: {} } },
+      { type: 'content_block_stop', index: 0 },
+    ]));
+  });
+  const response = await request(port, 'POST', '/v1/messages', codexMessage(true));
+  assert.match(response.body, /blocked_plan_tools/);
+  assert.doesNotMatch(response.body, /end_turn|message_stop/);
+  assert.equal((await codexReadiness(port)).upstreamUnavailable.statusCode, 200);
 });
 
 test('#192: a stream that finished its turn but lost message_stop is closed for the client; a cut-off turn is not', async (t) => {

@@ -440,8 +440,8 @@ function upstreamTokenCounts(message) {
   return counts && { tokens: Number(counts[1]), limitTokens: Number(counts[2]) };
 }
 
-function sseErrorFrame(type, message) {
-  const event = { type: 'error', error: { type, message } };
+function sseErrorFrame(type, message, details = null) {
+  const event = { type: 'error', error: { type, message, ...(details ? { details } : {}) } };
   return `event: error\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
@@ -468,34 +468,41 @@ function closeFinishedTurn(attempt, clientRes) {
   clientRes.write(SYNTHESIZED_MESSAGE_STOP);
 }
 
-function requestedStream(requestBody) {
-  try { return JSON.parse(requestBody).stream === true; } catch { return false; }
-}
-
-function emptyEndTurn(model, stream) {
-  const message = {
-    id: `msg_gateway_${crypto.randomUUID().replace(/-/g, '')}`, type: 'message', role: 'assistant', model,
-    content: [], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 },
+function completionFailure(code, message) {
+  return {
+    type: 'error',
+    error: { type: 'invalid_request_error', message, details: { error_code: code, retryable: false } },
   };
-  if (!stream) return { contentType: 'application/json', body: JSON.stringify(message) };
-  const events = [
-    { type: 'message_start', message: { ...message, stop_reason: null } },
-    { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } },
-    { type: 'message_stop' },
-  ];
-  return { contentType: 'text/event-stream', body: events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join('') };
 }
 
-// claude-code-proxy answers a Codex turn that completed with no text, tool call, or thinking
-// (empty_codex_completion) with a retryable 503. Claude Code resends it, every resend comes back
-// empty too, and an executor dies at closeout after its work is done (issue #192).
-function answerEmptyCodexCompletion(statusCode, upstreamBody, requestBody, model, clientRes, routeTelemetry) {
-  if (statusCode !== 503 || upstreamErrorDetail(upstreamBody) !== 'Codex completed without producing output') return false;
-  console.error('model-gateway: Codex completed a turn with no output (claude-code-proxy empty_codex_completion); answered an empty end_turn instead of a retryable 503');
-  const answer = emptyEndTurn(model, requestedStream(requestBody));
-  routeTelemetry?.finish(200);
-  clientRes.writeHead(200, { 'content-type': answer.contentType, 'content-length': Buffer.byteLength(answer.body) });
-  clientRes.end(answer.body);
+function blockedPlanToolFailure() {
+  return completionFailure('blocked_plan_tools',
+    'model-gateway: Codex returned only disabled plan tools; no permitted tool call remains. The turn did not succeed.');
+}
+
+function isBlockedPlanToolFailure(body) {
+  try { return JSON.parse(body.toString()).error?.details?.error_code === 'blocked_plan_tools'; }
+  catch { return false; }
+}
+
+function emptyCodexCompletionFailure(statusCode, upstreamBody) {
+  if (statusCode !== 503 || upstreamErrorDetail(upstreamBody) !== 'Codex completed without producing output') return null;
+  return completionFailure('empty_codex_completion',
+    'model-gateway: Codex completed without producing output; the turn did not succeed. Automatic retry is disabled.');
+}
+
+function answerEmptyCodexCompletion(statusCode, upstreamBody, clientRes, routeTelemetry, usageCapture) {
+  const failure = emptyCodexCompletionFailure(statusCode, upstreamBody);
+  if (!failure) return false;
+  const body = JSON.stringify(failure);
+  usageCapture?.setResponse(422, { 'content-type': 'application/json' });
+  usageCapture?.setResponseComplete(false);
+  routeTelemetry?.finish(503, 'upstream_error');
+  clientRes.writeHead(422, {
+    'content-type': 'application/json', 'content-length': Buffer.byteLength(body),
+    'x-model-gateway-upstream-status': '503',
+  });
+  clientRes.end(body);
   return true;
 }
 
@@ -530,16 +537,16 @@ function mergeCompactUsage(previous, next) {
     next?.[field] ?? previous?.[field] ?? null]));
 }
 
-function newCompactAttempt() {
+function newCompactAttempt(requireSummary = false) {
   return {
     chunks: [], bytes: 0, terminal: false, terminalCode: null, errorCode: null, hasVisibleText: false,
-    fatal: false, sawError: false, degraded: false,
-    endOfGenerationStop: false, contentAfterStop: false, openBlocks: 0,
+    fatal: false, sawError: false, degraded: false, requireSummary, error: null,
+    endOfGenerationStop: false, invalidStop: false, contentAfterStop: false, openBlocks: 0,
   };
 }
 
 function noteContentBlock(attempt, type) {
-  if (attempt.endOfGenerationStop) attempt.contentAfterStop = true;
+  if (attempt.endOfGenerationStop || attempt.invalidStop || attempt.terminal) attempt.contentAfterStop = true;
   if (type === 'content_block_start') attempt.openBlocks++;
   if (type === 'content_block_stop') attempt.openBlocks--;
 }
@@ -549,7 +556,9 @@ function noteStreamStructure(attempt, event) {
     attempt.terminal = true;
     attempt.terminalCode = 'message_stop';
   } else if (event.type === 'message_delta') {
-    if (GENERATION_END_STOP_REASONS.has(event.delta?.stop_reason)) attempt.endOfGenerationStop = true;
+    const reason = event.delta?.stop_reason;
+    if (GENERATION_END_STOP_REASONS.has(reason)) attempt.endOfGenerationStop = true;
+    else if (reason != null) attempt.invalidStop = true;
   } else if (CONTENT_BLOCK_EVENTS.has(event.type)) {
     noteContentBlock(attempt, event.type);
   }
@@ -566,6 +575,7 @@ function noteCompactEvent(attempt, event) {
   if (visibleTextDelta(event)) attempt.hasVisibleText = true;
   if (event.type !== 'error') return;
   attempt.sawError = true;
+  attempt.error = event.error;
   attempt.errorCode = compactErrorCode(event.error);
   if (COMPACT_FATAL_ERROR_TYPES.has(event.error?.type)) attempt.fatal = true;
 }
@@ -574,14 +584,14 @@ function noteCompactEvent(attempt, event) {
 // a content block still open, is proof the generation was still moving when the
 // stream said it had stopped.
 function generationFinished(attempt) {
-  if (attempt.terminal) return true;
-  return attempt.endOfGenerationStop && !attempt.contentAfterStop && attempt.openBlocks === 0;
+  if (attempt.terminal && !attempt.requireSummary) return true;
+  return attempt.endOfGenerationStop && !attempt.invalidStop && !attempt.contentAfterStop && attempt.openBlocks === 0;
 }
 
 // An explicit upstream error frame still retries even after the model finished:
 // upstream observed something the shim did not.
 function deliverableAttempt(attempt) {
-  return generationFinished(attempt) && !attempt.sawError;
+  return generationFinished(attempt) && !attempt.sawError && !attempt.degraded;
 }
 
 function isSuccessStatus(statusCode) {
@@ -1436,8 +1446,8 @@ function runWorker() {
       const content = parsed.content.filter((block) => !filterPlanToolBlock(block));
       if (content.length !== parsed.content.length) {
         parsed.content = content;
-        if (parsed.stop_reason === 'tool_use' && !content.some((block) => block && block.type === 'tool_use')) {
-          parsed.stop_reason = 'end_turn';
+        if (!content.some((block) => block && block.type === 'tool_use')) {
+          return Buffer.from(JSON.stringify(blockedPlanToolFailure()));
         }
       }
     }
@@ -1468,8 +1478,17 @@ function runWorker() {
     const dropped = new Set();
     let droppedCount = 0;
     let keptToolUse = false;
+    let failed = false;
+
+    function failBlockedPlanTools() {
+      failed = true;
+      const failure = blockedPlanToolFailure();
+      observe?.(failure);
+      write(`event: error\ndata: ${JSON.stringify(failure)}\n\n`);
+    }
 
     function transformFrame(frame, separator) {
+      if (failed) return;
       const lines = frame.split(/\r?\n/);
       const dataLine = lines.findIndex((line) => line.startsWith('data:'));
       if (dataLine < 0) return write(frame + separator);
@@ -1491,9 +1510,10 @@ function runWorker() {
       }
       if (filterPlanTools && originalIndex != null && dropped.has(originalIndex)) return;
       if (filterPlanTools && originalIndex != null) event.index = originalIndex - droppedCount;
-      if (filterPlanTools && event.type === 'message_delta' && event.delta && event.delta.stop_reason === 'tool_use'
-          && droppedCount > 0 && !keptToolUse) {
-        event.delta.stop_reason = 'end_turn';
+      const ending = event.type === 'message_stop'
+        || (event.type === 'message_delta' && event.delta?.stop_reason != null);
+      if (filterPlanTools && ending && droppedCount > 0 && !keptToolUse) {
+        return failBlockedPlanTools();
       }
       lines[dataLine] = `data: ${JSON.stringify(event)}`;
       write(lines.join('\n') + separator);
@@ -1514,6 +1534,7 @@ function runWorker() {
       end() {
         pending += decoder.end();
         if (pending) transformFrame(pending, '');
+        if (filterPlanTools && droppedCount > 0 && !keptToolUse && !failed) failBlockedPlanTools();
       },
     };
   }
@@ -1662,11 +1683,12 @@ function runWorker() {
           if (normalizeContextErrors && SENTRY_ENABLED && upRes.statusCode === 413) noteGenuineOverflow(sessionId, contextModel);
           if (normalizeContextErrors) noteCodexUpstreamRejection(upRes.statusCode, upRes.headers, Buffer.concat(chunks));
           const authenticationFailure = codexAuthenticationFailure(Buffer.concat(chunks), upRes.statusCode);
-          const error = authenticationFailure ? JSON.parse(authenticationFailure).error : {
+          const completionFailure = emptyCodexCompletionFailure(upRes.statusCode, Buffer.concat(chunks));
+          const error = completionFailure?.error || (authenticationFailure ? JSON.parse(authenticationFailure).error : {
             type: 'api_error',
             message: upstreamErrorMessage(Buffer.concat(chunks), upRes.statusCode),
-          };
-          clientRes.write(sseErrorFrame(error.type, error.message));
+          });
+          clientRes.write(sseErrorFrame(error.type, error.message, error.details));
           clientRes.end();
         };
         upRes.on('data', (chunk) => {
@@ -1793,7 +1815,7 @@ function runWorker() {
           if (settled) return;
           settled = true;
           const upstreamBody = rewriteCodexJson(Buffer.concat(chunks), advertisedModel, false);
-          if (answerEmptyCodexCompletion(upRes.statusCode, upstreamBody, body, advertisedModel, clientRes, routeTelemetry)) return;
+          if (answerEmptyCodexCompletion(upRes.statusCode, upstreamBody, clientRes, routeTelemetry, usageCapture)) return;
           noteCodexUpstreamRejection(upRes.statusCode, upRes.headers, upstreamBody);
           if (answerLegacyContextOverflow(upstreamBody, body, sessionId, contextModel, clientRes, routeTelemetry, upRes.statusCode)) return;
           routeTelemetry.finish(upRes.statusCode);
@@ -1823,7 +1845,7 @@ function runWorker() {
           if (!compactGuard?.headWritten) clientRes.writeHead(upRes.statusCode, resHeaders);
           if (compactGuard) compactGuard.headWritten = true;
           keepSseAlive(upRes, clientRes);
-          const attempt = compactGuard ? newCompactAttempt() : null;
+          const attempt = compactGuard ? newCompactAttempt(true) : null;
           const inference = attempt || newCompactAttempt();
           const observeEvent = (event) => {
             noteCompactEvent(inference, event);
@@ -1833,15 +1855,12 @@ function runWorker() {
           };
           const emit = attempt
             ? (chunk) => {
-              if (attempt.degraded) return clientRes.write(chunk);
+              if (attempt.degraded) return;
               attempt.chunks.push(chunk);
               attempt.bytes += Buffer.byteLength(chunk);
               if (attempt.bytes <= COMPACT_STREAM_MAX_BYTES) return;
-              // Far past any real summary; keep the turn alive rather than
-              // hoard it, and say plainly that retry cover is gone.
-              console.error(`model-gateway: compaction response passed ${COMPACT_STREAM_MAX_BYTES} buffered bytes; streaming the remainder live without retry cover`);
+              console.error(`model-gateway: compaction response exceeded ${COMPACT_STREAM_MAX_BYTES} buffered bytes; refusing the unverified summary`);
               attempt.degraded = true;
-              for (const buffered of attempt.chunks) clientRes.write(buffered);
               attempt.chunks.length = 0;
             }
             : (chunk) => clientRes.write(chunk);
@@ -1901,15 +1920,13 @@ function runWorker() {
             });
             routeTelemetry?.finish(upRes.statusCode,
               statusOverride || (completed ? null : 'upstream_error'));
-            for (const buffered of attempt.chunks) clientRes.write(buffered);
-            // The model finished but the terminal frame was lost in transit;
-            // close the turn the client is holding open rather than re-inferring
-            // the largest request of the session.
+            if (deliverable) for (const buffered of attempt.chunks) clientRes.write(buffered);
             if (deliverable && !attempt.terminal) clientRes.write(SYNTHESIZED_MESSAGE_STOP);
-            if (!deliverable && !attempt.sawError) {
+            if (!deliverable) {
               const attempts = compactGuard.attempts + 1;
-              clientRes.write(sseErrorFrame('api_error',
-                `model-gateway: the Codex compaction stream ended without a completed generation after ${attempts} attempt(s); the summary above is incomplete`));
+              clientRes.write(sseErrorFrame(attempt.error?.type || 'api_error', attempt.error?.message
+                || `model-gateway: the Codex compaction stream ended without a completed generation after ${attempts} attempt(s); no summary was delivered`,
+              attempt.error?.details));
             }
             clientRes.end();
           };
@@ -1930,18 +1947,22 @@ function runWorker() {
         });
         upRes.on('end', () => {
           const upstreamBody = Buffer.concat(chunks);
+          const filtered = rewriteCodexJson(upstreamBody, advertisedModel, filterPlanTools);
+          const blockedPlanTools = isBlockedPlanToolFailure(filtered);
           usageCapture?.observeJson(upstreamBody);
-          const completed = completedCodexJson(upstreamBody);
+          const completed = !blockedPlanTools && completedCodexJson(upstreamBody);
           if (completed) {
             const response = JSON.parse(upstreamBody);
             const ordinaryTurnCompleted = ['end_turn', 'stop_sequence', 'tool_use'].includes(response.stop_reason)
               && !isCompactionRequest(JSON.parse(body));
             recordSentryUsage(sessionId, { type: 'message_delta', usage: response.usage }, contextModel, ordinaryTurnCompleted);
           }
-          const filtered = rewriteCodexJson(upstreamBody, advertisedModel, filterPlanTools);
-          routeTelemetry?.finish(upRes.statusCode, completed ? null : 'upstream_error');
+          const status = blockedPlanTools ? 422 : upRes.statusCode;
+          usageCapture?.setResponse(status, resHeaders);
+          if (blockedPlanTools) usageCapture?.setResponseComplete(false);
+          routeTelemetry?.finish(status, completed ? null : 'upstream_error');
           resHeaders['content-length'] = filtered.length;
-          clientRes.writeHead(upRes.statusCode, resHeaders);
+          clientRes.writeHead(status, resHeaders);
           clientRes.end(filtered);
         });
         return;

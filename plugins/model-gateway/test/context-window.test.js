@@ -920,9 +920,10 @@ test('Codex responses strip hallucinated plan-mode tools from JSON and SSE', asy
   const body = JSON.stringify({ model: 'claude-gpt-5.6-sol', max_tokens: 1, messages: [] });
   const jsonResponse = await request(shimPort, 'POST', '/v1/messages', body);
   const json = JSON.parse(jsonResponse.body);
-  assert.equal(json.model, 'claude-gpt-5.6-sol');
-  assert.deepEqual(json.content, [{ type: 'text', text: 'keep' }]);
-  assert.equal(json.stop_reason, 'end_turn');
+  assert.equal(jsonResponse.status, 422);
+  assert.equal(json.error.details.error_code, 'blocked_plan_tools');
+  assert.equal(json.error.details.retryable, false);
+  assert.equal(json.stop_reason, undefined);
 
   useSse = true;
   const sseResponse = await request(shimPort, 'POST', '/v1/messages', body, { accept: 'text/event-stream' });

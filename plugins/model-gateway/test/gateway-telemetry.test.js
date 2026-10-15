@@ -309,7 +309,8 @@ test('uses one failed semantic span and one successful retry span', async (t) =>
     if (attempts === 2 || attempts === 3) {
       return res.end('event: error\ndata: {"type":"error","error":{"type":"api_error","message":"upstream failed"}}\n\n');
     }
-    return res.end('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+    return res.end('event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'
+      + 'event: message_stop\ndata: {"type":"message_stop"}\n\n');
   });
   const proxyPort = await listen(proxy);
   t.after(() => proxy.close());

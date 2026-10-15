@@ -265,33 +265,33 @@ const STOP_REASON_MATRIX = [
   { stopReason: false, finished: false },
 ];
 
-test('a lost terminal frame is only inferred complete for an end-of-generation stop reason', async (t) => {
+function stopReasonCases() {
+  return STOP_REASON_MATRIX.flatMap(({ stopReason, finished }) => ['', MESSAGE_STOP].flatMap((terminal) => [
+    { first: lostTerminalStream('MATRIX_SUMMARY', stopReason) + terminal, finished },
+    { first: MESSAGE_START + BLOCK_START + delta('MATRIX_SUMMARY') + messageDeltaWithStop(stopReason) + terminal, finished: false },
+    { first: lostTerminalStream('MATRIX_SUMMARY', stopReason) + terminal + BLOCK_START + delta('LATER_CONTENT') + BLOCK_STOP, finished: false },
+    { first: lostTerminalStream('MATRIX_SUMMARY', stopReason) + terminal
+      + frame('error', { type: 'error', error: { type: 'api_error', message: 'websocket_missing_terminal' } }), finished: false },
+  ].map((item, shape) => ({ ...item, label: `stop_reason ${JSON.stringify(stopReason)}, terminal ${Boolean(terminal)}, shape ${shape}` }))));
+}
+
+test('compaction completion requires a valid stop, closed blocks, and no later content or error, with or without message_stop', async (t) => {
   const proxy = casedProxy();
   const proxyPort = await listen(proxy.server);
   t.after(() => proxy.server.close());
   const shimPort = await spawnShim(t, proxyPort, { CODEX_GATEWAY_COMPACT_STREAM_RETRIES: '1' });
 
-  for (const { stopReason, finished } of STOP_REASON_MATRIX) {
-    const label = `stop_reason ${JSON.stringify(stopReason)}`;
-    const summary = `SUMMARY_${String(stopReason)}`;
-    proxy.begin({
-      first: lostTerminalStream(summary, stopReason),
-      replacement: completeStream(`REPLACEMENT_${String(stopReason)}`),
-    });
-
+  for (const { first, finished, label } of stopReasonCases()) {
+    proxy.begin({ first, replacement: completeStream('MATRIX_REPLACEMENT') });
     const response = await postStream(shimPort, compactBody());
 
     assert.equal(response.status, 200, label);
     assert.equal(proxy.attemptCount(), finished ? 1 : 2, `${label}: wrong number of upstream attempts`);
     assert.equal(countFrames(response.body, 'message_stop'), 1, `${label}: exactly one terminal frame`);
     assert.equal(countFrames(response.body, 'message_start'), 1, `${label}: exactly one message`);
-    if (finished) {
-      assert.match(response.body, new RegExp(summary), `${label}: the finished summary must be delivered`);
-      assert.doesNotMatch(response.body, /"type":"error"/, `${label}: a finished turn is not an error`);
-    } else {
-      assert.match(response.body, new RegExp(`REPLACEMENT_${String(stopReason)}`), `${label}: the retry must be delivered`);
-      assert.doesNotMatch(response.body, new RegExp(summary), `${label}: the short summary must not reach the client`);
-    }
+    assert.match(response.body, finished ? /MATRIX_SUMMARY/ : /MATRIX_REPLACEMENT/, label);
+    assert.doesNotMatch(response.body, finished ? /MATRIX_REPLACEMENT/ : /MATRIX_SUMMARY/, label);
+    assert.doesNotMatch(response.body, /"type":"error"/, label);
   }
 });
 
@@ -306,7 +306,11 @@ test('a stop reason the stream itself contradicts is re-inferred, not delivered'
     { name: 'a content block still open at the stop', first: openBlock, leaked: /OPEN_BLOCK_TEXT/ },
     { name: 'content after the earlier of two message_delta frames', first: contentAfterStop, leaked: /AFTER_EARLY_STOP/ },
     { name: 'a typed upstream error after the stop', first: typedErrorAfterStop, leaked: /SUSPECT_TYPED_ERROR/ },
-  ];
+    { name: 'a terminal without a stop reason', first: MESSAGE_START + BLOCK_START + delta('NO_STOP_REASON') + BLOCK_STOP + MESSAGE_STOP, leaked: /NO_STOP_REASON/ },
+    { name: 'a truncating stop after a valid stop', first: lostTerminalStream('CONFLICTING_STOP') + messageDeltaWithStop('max_tokens'), leaked: /CONFLICTING_STOP/ },
+  ].flatMap((item) => ['', MESSAGE_STOP].map((terminal) => ({
+    ...item, name: `${item.name}, terminal ${Boolean(terminal)}`, first: item.first + terminal,
+  })));
   const proxy = casedProxy();
   const proxyPort = await listen(proxy.server);
   t.after(() => proxy.server.close());
@@ -519,6 +523,32 @@ test('exhausted compaction retries surface a truthful error instead of a fabrica
   assert.match(response.body, /"type":"error"/);
 });
 
+test('a compaction response over the buffer limit fails closed without leaking a summary', async (t) => {
+  const proxy = scriptedProxy([{ body: completeStream('OVERSIZED_SUMMARY') }]);
+  const proxyPort = await listen(proxy.server);
+  t.after(() => proxy.server.close());
+  const shimPort = await spawnShim(t, proxyPort, { CODEX_GATEWAY_COMPACT_STREAM_MAX_BYTES: '32' });
+
+  const response = await postStream(shimPort, compactBody());
+
+  assert.equal(proxy.attemptCount(), 1);
+  assert.match(response.body, /"type":"error"/);
+  assert.doesNotMatch(response.body, /OVERSIZED_SUMMARY|message_stop|message_start/);
+});
+
+test('exhausted truncation retries never leak a partial summary or its terminal frame', async (t) => {
+  const proxy = scriptedProxy([{ body: lostTerminalStream('TRUNCATED_SUMMARY', 'max_tokens') + MESSAGE_STOP }]);
+  const proxyPort = await listen(proxy.server);
+  t.after(() => proxy.server.close());
+  const shimPort = await spawnShim(t, proxyPort, { CODEX_GATEWAY_COMPACT_STREAM_RETRIES: '1' });
+
+  const response = await postStream(shimPort, compactBody());
+
+  assert.equal(proxy.attemptCount(), 2);
+  assert.match(response.body, /"type":"error"/);
+  assert.doesNotMatch(response.body, /TRUNCATED_SUMMARY|message_stop|message_start/);
+});
+
 test('exhausted compaction retries replay the real upstream error events verbatim', async (t) => {
   const proxy = scriptedProxy([{ body: missingTerminalStream() }]);
   const proxyPort = await listen(proxy.server);
@@ -606,6 +636,24 @@ test('healthz reports the compaction guard settings', async (t) => {
   assert.equal(health.compaction.streamGuard, true);
   assert.equal(health.compaction.retries, 4);
   assert.ok(health.compaction.maxBufferedBytes > 0);
+});
+
+test('an empty Codex completion after a compact retry stays a typed non-retryable failure', async (t) => {
+  const proxy = scriptedProxy([
+    { body: truncatedStream() },
+    { status: 503, body: JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'Codex completed without producing output' } }) },
+  ]);
+  const proxyPort = await listen(proxy.server);
+  t.after(() => proxy.server.close());
+  const shimPort = await spawnShim(t, proxyPort);
+
+  const response = await postStream(shimPort, compactBody());
+
+  assert.equal(proxy.attemptCount(), 2);
+  assert.equal(response.status, 200, 'headers were already committed, so the failure is in-band');
+  assert.match(response.body, /empty_codex_completion/);
+  assert.match(response.body, /"retryable":false/);
+  assert.doesNotMatch(response.body, /message_stop|partial /);
 });
 
 test('an upstream error status on a compaction retry is reported in-band, not as a crash', async (t) => {
